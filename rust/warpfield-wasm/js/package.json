@@ -1,0 +1,25 @@
+{
+  "name": "@zarr-warpfield/wasm",
+  "version": "0.1.0",
+  "description": "warpfield codec (error-bounded, seam-free registration-field compression) in WebAssembly",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./warpfield.wasm": "./warpfield.wasm"
+  },
+  "files": ["dist", "src", "warpfield.wasm"],
+  "scripts": {
+    "build:wasm": "cargo build --manifest-path ../../Cargo.toml -p warpfield-wasm --target wasm32-unknown-unknown --profile release-wasm && cp ../../target/wasm32-unknown-unknown/release-wasm/warpfield_wasm.wasm warpfield.wasm",
+    "build": "tsc -p .",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.18.0"
+  },
+  "engines": { "node": ">=22.18" }
+}

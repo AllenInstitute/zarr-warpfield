@@ -1,0 +1,13 @@
+[package]
+name = "warpfield-wasm"
+description = "WebAssembly build of the warpfield codec (plain C-ABI exports, no wasm-bindgen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+warpfield = { path = "../warpfield", default-features = false, features = ["zstd-pure", "json"] }

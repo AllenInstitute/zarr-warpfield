@@ -1,0 +1,57 @@
+[project]
+name = "zarr-warpfield"
+version = "0.1.0"
+description = "Error-bounded, seam-free lossy codec for registration displacement fields in Zarr v3"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Forrest Collman", email = "forrestc@alleninstitute.org" }]
+keywords = ["zarr", "registration", "displacement field", "lossy", "error-bounded", "codec"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = ["numpy>=1.25", "zstandard>=0.22"]
+
+[project.optional-dependencies]
+# encode/decode need only numpy and zstandard; the zarr codec needs zarr.
+codec = ["zarr>=3"]
+# the Rust implementation (10-30x faster, bit-identical); used automatically when installed
+fast = ["zarr-warpfield-rs>=0.1"]
+
+# How zarr discovers the codec once this package is installed. The entry-point
+# name must be the codec's name as it appears in array metadata.
+[project.entry-points."zarr.codecs"]
+warpfield = "zarr_warpfield:WarpFieldCodec"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zarr_warpfield"]
+
+[dependency-groups]
+dev = ["pytest>=8", "zarr>=3", "ruff>=0.6", "scipy>=1.11", "matplotlib>=3.8", "jsonschema>=4"]
+
+[tool.uv.sources]
+zarr-warpfield-rs = { path = "rust/warpfield-py" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 96
+src = ["src", "tests", "scripts"]
+extend-exclude = ["rust"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/gallery_page.py" = ["E501"]

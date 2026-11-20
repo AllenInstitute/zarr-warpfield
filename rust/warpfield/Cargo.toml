@@ -1,0 +1,25 @@
+[package]
+name = "warpfield"
+description = "Error-bounded, seam-free lossy codec for registration displacement fields (zarr v3 `warpfield`)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords = ["zarr", "compression", "registration", "lossy", "codec"]
+categories = ["compression", "science"]
+
+[features]
+default = ["zstd-native", "json"]
+# libzstd via the `zstd` crate (fast, needs a C compiler for the target)
+zstd-native = ["dep:zstd"]
+# pure-Rust zstd via `ruzstd` (for wasm32 and other targets without a C toolchain)
+zstd-pure = ["dep:ruzstd"]
+# Config::from_json
+json = ["dep:serde_json"]
+
+[dependencies]
+zstd = { version = "0.14", optional = true, default-features = false }
+ruzstd = { version = "0.9", optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]

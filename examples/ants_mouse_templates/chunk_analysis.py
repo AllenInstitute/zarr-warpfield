@@ -9,18 +9,20 @@ from pathlib import Path
 import numpy as np
 import zarr
 from fetch_templates import voxel_to_ras
+from ome_scene import field_geometry
 from scipy import ndimage
 
 SPIM = "https://allen-atlas-assets.s3.us-west-2.amazonaws.com/templates/allen-adult-mouse-spim-lca-template/2024-05/template.ome.zarr"
 meta = json.load(urllib.request.urlopen(SPIM + "/zarr.json"))
-g = zarr.open_group(Path(__file__).parents[2] / "out/ants/forward.ome.zarr", mode="r")
-df = g.attrs["displacement_field"]
-lvl = df["scales"][1]
-F = g[lvl["path"]][:].astype(np.float32)  # field level s1 (50 um), (3, k, j, i)
-I2O = np.array(lvl["index_to_output"])
+FIELD = (
+    Path(__file__).parents[2] / "out/ants/spim_stpt_ants.zarr/coordinateTransformations/forward"
+)
+g = zarr.open_group(FIELD, mode="r")
+levels, V = field_geometry(FIELD)
+F = g["s1"][:].astype(np.float32)  # field level s1 (50 um), (3, k, j, i)
+I2O = levels["s1"]
 O2I = np.linalg.inv(np.vstack([I2O, [0, 0, 0, 1]]))
-V = np.array(df["vector_to_output"])
-s0 = np.array(df["scales"][0]["index_to_output"])
+s0 = levels["s0"]
 N0 = np.array(g["s0"].shape[1:])
 corners = np.array(
     [

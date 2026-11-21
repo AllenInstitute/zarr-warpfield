@@ -32,7 +32,7 @@
    "type": "image",
    "name": "forward field",
    "source": {
-    "url": "zarr3://http://127.0.0.1:9077/forward.ome.zarr/",
+    "url": "zarr3://http://127.0.0.1:9077/spim_stpt_ants.zarr/coordinateTransformations/forward/",
     "transform": {
      "outputDimensions": {
       "c^": [

@@ -270,8 +270,11 @@ The warpfield Neuroglancer branch (`warpfield-transform`) decodes the codec with
 the Rust wasm build. It can show a field directly, or use it as a layer's
 `"warp"` to view one template in the other's space without resampling it.
 Warped chunks are computed on the fly from the stored field and the original
-moving chunks. The field here is an OME-Zarr multiscale version of the same
-data at ε = 2.5 µm (6.7 MB for five levels, including min/max bounds).
+moving chunks. The fields here are OME-Zarr 0.6 multiscale versions of the same
+data at ε = 2.5 µm (6.7 MB for five levels, including min/max bounds). They are
+stored as an RFC-5 scene: each field is the array of a `displacements`
+transformation, and a `bijection` pairs the forward and inverse fields (see
+[the example](examples/ants_mouse_templates/README.md)).
 
 | | |
 |---|---|

@@ -1,22 +1,24 @@
-"""Write an ANTs displacement field as an OME-Zarr 0.6 group that Neuroglancer can
-display, and that a warp can be applied from, slab by slab.
+"""Write an ANTs displacement field as an OME-Zarr 0.6 multiscale image: the
+field array of an RFC-5 `displacements` transformation, displayable as an image.
 
-    ome_field.py transform.nii.gz forward.ome.zarr [--error-bound 0.0025] [--output-space "mm RAS"]
+    ome_field.py transform.nii.gz forward/ [--error-bound 0.0025] [--output-space "mm RAS"]
+
+Put the forward and inverse fields in a scene that declares the transformation
+between the two template spaces with `ome_scene.py`.
 
 Layout
 ------
-forward.ome.zarr/
-  zarr.json      OME-Zarr 0.6 multiscale: one scale "s0", axes (c, k, j, i);
-                 coordinate transform intrinsic -> "mm RAS" (axes c, z, y, x),
-                 the coordinate system of the Allen OME-Zarr templates.
-                 attributes.displacement_field: how to apply the field (below).
+forward/
+  zarr.json      OME-Zarr 0.6 multiscale image, axes (c, k, j, i). Axis c has
+                 "type": "displacement" (RFC-5): component c is the displacement,
+                 in mm, along array axis c + 1 of the coordinate system
+                 "intrinsic" (k, j, i in mm; "index-aligned", an exact signed
+                 permutation of ANTs' LPS). An affine maps "intrinsic" to the
+                 output space ("mm RAS", axes z, y, x: the coordinate system of
+                 the Allen OME-Zarr templates).
+                 attributes.warpfield: what OME-Zarr has no place for (below).
   s0/            float32 (3, Nk, Nj, Ni), chunks (3, 64, 64, 64), warpfield codec.
-  s1/, s2/, ...  2x2x2 block means of the level below, same codec and error bound
-                 (attributes.displacement_field.scales gives each index_to_output,
-                 and interpolation_error: max / p99 deviation from s0 when
-                 linearly interpolated, in field units, sampled).
-                 Component c is the displacement, in mm, along +array axis c+1
-                 ("index-aligned"; an exact signed permutation of ANTs' LPS).
+  s1/, s2/, ...  2x2x2 block means of the level below, same codec and error bound.
   bounds/        float32 (6, nbk, nbj, nbi): per block of 16^3 field samples
                  (plus the first sample of the next block), the min (rows 0-2)
                  and max (rows 3-5) over the samples of x + u(x), in output mm,
@@ -27,17 +29,17 @@ forward.ome.zarr/
                  needed for display: neuroglancer/field_shader.glsl computes
                  det J in the shader from neighbouring voxels.
 
-attributes.displacement_field (version 0.1):
-  path, vector_axis       the field array and its component axis
-  output_axes, unit       output coordinate system axes and unit
-  index_to_output         3x4: spatial array index (k, j, i), sample n at n -> output
-  vector_to_output        3x3: components -> output displacement
-  interpolation           "linear" inside the grid, "nearest" extrapolation outside
+attributes.warpfield (version 0.2):
+  error_bound             the codec's error bound, in field units (mm)
+  levels                  per multiscale level: interpolation_error, the max / p99
+                          deviation from s0 when linearly interpolated, in field
+                          units (sampled), so viewers can pick a coarse level safely
   bounds                  {path, block_shape}
-  inverse                 (optional) the field of the inverse transformation,
-                          relative to this group
+  extrapolation           "nearest" outside the grid (as ANTs / ITK)
+  det_jacobian_min, source
+
 Resampling a moving image M (in the same output space) into the field's space:
-W(x) = M(x + vector_to_output @ u(x)).
+W(x) = M(A(A^-1 x + u(A^-1 x))), A the affine "intrinsic" -> output.
 """
 
 from __future__ import annotations
@@ -69,7 +71,8 @@ def ome(name, intrinsic_axes, levels, index_to_output_mm, spacing, channel, spac
     aff[:, :3] = lin
     aff[:, 3] = index_to_output_mm[:, 3]
     if channel:
-        ch = [{"name": "c", "type": "channel"}]
+        # RFC-5: the vector axis of a displacement field
+        ch = [{"name": "c", "type": "displacement", "discrete": True}]
         sp, out = ch + sp, ch + out
         a4 = np.zeros((4, 5))
         a4[0, 0] = 1
@@ -171,7 +174,6 @@ def write(
     space="mm RAS",
     jacobian_image=False,
     min_level_extent=16,
-    inverse=None,
 ):
     src = NiftiField(nifti)
     Nk, Nj, Ni = src.grid.shape
@@ -311,25 +313,23 @@ def write(
     for meta, err in zip(scales_meta, level_errors(root), strict=True):
         meta["interpolation_error"] = err
     root.attrs["ome"] = ome(out.name, ["k", "j", "i"], levels, idx_to_out, spacing, True, space)
-    root.attrs["displacement_field"] = {
-        "version": "0.1",
-        "path": "s0",
-        "vector_axis": 0,
-        "output_space": space,
-        "output_axes": ["z", "y", "x"],
-        "unit": "millimeter",
-        "index_to_output": idx_to_out.tolist(),
-        "vector_to_output": vec_to_out.tolist(),
-        "interpolation": "linear",
-        "extrapolation": "nearest",
+    # RFC-5: the vectors are expressed in the displacements transformation's
+    # coordinate system, here "intrinsic", whose affine to the output is idx_to_out
+    # divided by the spacing.
+    if not np.allclose(vec_to_out, idx_to_out[:, :3] / np.asarray(spacing)[None, :]):
+        raise ValueError("the field's vectors are not aligned with its array axes")
+    root.attrs["warpfield"] = {
+        "version": "0.2",
         "error_bound": error_bound,
-        "scales": scales_meta,
+        "levels": [
+            {"path": m["path"], "interpolation_error": m["interpolation_error"]}
+            for m in scales_meta
+        ],
         "bounds": {"path": "bounds", "block_shape": [BLOCK] * 3},
-        **({"inverse": inverse} if inverse else {}),
+        "extrapolation": "nearest",
+        "det_jacobian_min": det_min,
         "source": nifti.name,
-        "applies": "W(x) = M(x + vector_to_output @ u(x)); u linear inside, nearest outside",
     }
-    root.attrs["det_jacobian_min"] = det_min
     if jac is not None:
         jac.attrs["ome"] = ome(
             out.name + " det J", ["k", "j", "i"], [("s0", 1)], idx_to_out, spacing, False, space
@@ -344,11 +344,6 @@ def main():
     ap.add_argument("--error-bound", type=float, default=0.0025)
     ap.add_argument("--output-space", default="mm RAS")
     ap.add_argument(
-        "--inverse",
-        help="path or URL, relative to this group, of the field of the inverse "
-        "transformation (lets viewers move points, e.g. mesh vertices, directly)",
-    )
-    ap.add_argument(
         "--jacobian-image",
         action="store_true",
         help="also write det J as an image (large; the field shader computes it on the fly)",
@@ -360,7 +355,6 @@ def main():
         a.error_bound,
         space=a.output_space,
         jacobian_image=a.jacobian_image,
-        inverse=a.inverse,
     )
     print(a.out, "min det J", d)
 

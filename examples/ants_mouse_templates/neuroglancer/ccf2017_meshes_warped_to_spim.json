@@ -71,7 +71,7 @@
       ]
      ]
     },
-    "warp": "http://127.0.0.1:9077/inverse.ome.zarr/"
+    "warp": "http://127.0.0.1:9077/spim_stpt_ants.zarr/coordinateTransformations/inverse/"
    },
    "selectedAlpha": 0.5,
    "objectAlpha": 0.9,

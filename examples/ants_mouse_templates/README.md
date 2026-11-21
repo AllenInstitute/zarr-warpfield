@@ -44,6 +44,37 @@ The zarr layout:
 - the voxel → LPS affine is stored in `attributes.ants_displacement_field`;
 - the codec is `warpfield` with chunks 64³×3 and `jacobian.min_det` 0.1.
 
+For viewers, the fields are also written as an OME-Zarr 0.6 scene
+(RFC-5 coordinate transformations):
+
+```sh
+uv run --with nibabel --with indexed_gzip python ome_field.py transform-SPIM.nii.gz OUT/forward
+uv run --with nibabel --with indexed_gzip python ome_field.py inverse-transform-SPIM.nii.gz OUT/inverse
+python ome_scene.py OUT/spim_stpt_ants.zarr --forward OUT/forward --inverse OUT/inverse \
+    --input-space "STPT template 2020, mm RAS" --output-space "SPIM template LCA 2024-05, mm RAS"
+```
+
+```
+spim_stpt_ants.zarr/              ome.scene: the two template spaces and a "bijection"
+  coordinateTransformations/
+    forward/                      field on the STPT grid: multiscale s0..s4, bounds/
+    inverse/                      field on the SPIM grid
+```
+
+- **Each field** is an OME-Zarr multiscale image with axes (c, k, j, i).
+  - `c` has `"type": "displacement"`. Its components are displacements in mm
+    along the array axes of the coordinate system `intrinsic`.
+  - An affine maps `intrinsic` to the templates' `mm RAS`.
+  - `attributes.warpfield` holds what OME-Zarr has no place for: the error
+    bound, each level's measured interpolation error, and the bounds array.
+- **The bijection's forward transformation** maps an STPT point to SPIM
+  space: affine to `intrinsic`, the forward field's `displacements`, then the
+  affine back. Resampling SPIM through it puts SPIM in STPT space. The inverse
+  transformation uses the inverse field.
+- **Neuroglancer** takes a field group as a layer source's `"warp"`. It finds
+  the field of the opposite direction (used to move mesh vertices) through the
+  scene's bijection.
+
 ## Results
 
 | field | store | size | vs raw | vs `.nii.gz` | max error | NCC(warp, NIfTI warp) | mean / max image diff | Jacobian violations |

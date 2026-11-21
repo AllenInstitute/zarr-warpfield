@@ -1,0 +1,95 @@
+{
+ "dimensions": {
+  "x": [
+   1e-05,
+   "m"
+  ],
+  "y": [
+   1e-05,
+   "m"
+  ],
+  "z": [
+   1e-05,
+   "m"
+  ]
+ },
+ "crossSectionScale": 2.2,
+ "projectionScale": 1800,
+ "layout": "4panel",
+ "layers": [
+  {
+   "type": "image",
+   "name": "SPIM template",
+   "source": "zarr3://https://allen-atlas-assets.s3.us-west-2.amazonaws.com/templates/allen-adult-mouse-spim-lca-template/2024-05/template.ome.zarr/",
+   "shaderControls": {
+    "normalized": {
+     "range": [
+      0,
+      1.1
+     ]
+    }
+   }
+  },
+  {
+   "type": "segmentation",
+   "name": "CCF 2017 annotation warped to SPIM",
+   "source": {
+    "url": "precomputed://https://allen-atlas-assets.s3.us-west-2.amazonaws.com/annotation-sets/allen-adult-mouse-annotation/2017/annotations.precomputed",
+    "transform": {
+     "outputDimensions": {
+      "z": [
+       0.001,
+       "m"
+      ],
+      "y": [
+       0.001,
+       "m"
+      ],
+      "x": [
+       0.001,
+       "m"
+      ]
+     },
+     "matrix": [
+      [
+       0.0,
+       -1.0,
+       0.0,
+       5.225
+      ],
+      [
+       0.0,
+       0.0,
+       -1.0,
+       5.355
+      ],
+      [
+       1.0,
+       0.0,
+       0.0,
+       -5.7
+      ]
+     ]
+    },
+    "warp": "http://127.0.0.1:9077/inverse.ome.zarr/"
+   },
+   "selectedAlpha": 0.5,
+   "objectAlpha": 0.9,
+   "segments": [
+    "672",
+    "382",
+    "795",
+    "56",
+    "733",
+    "961"
+   ],
+   "notSelectedAlpha": 0.0
+  }
+ ],
+ "projectionOrientation": [
+  -0.25,
+  0.35,
+  0.1,
+  0.9
+ ]
+}

@@ -17,7 +17,7 @@ from zarr.core.buffer import Buffer, NDBuffer
 from zarr.core.common import JSON, parse_named_configuration
 from zarr.registry import register_codec
 
-from zarr_warpfield.core import Config, WarpFieldSpecError, decode, encode
+from warpfield.core import Config, WarpFieldSpecError, decode, encode
 
 CODEC_NAME = "warpfield"
 

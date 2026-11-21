@@ -1,0 +1,98 @@
+# Native libraries for the Java bindings on every platform, then one jar with all
+# of them. The Java tests run against each platform's library on Java 8 (the
+# bytecode target, as for n5 / n5-zarr / zarr-java) and Java 21.
+name: java
+
+on:
+  push:
+    paths: ["rust/**", "java/**", ".github/workflows/java.yml"]
+  pull_request:
+    paths: ["rust/**", "java/**", ".github/workflows/java.yml"]
+  workflow_dispatch:
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, platform: macos-aarch64, lib: libwarpfield_jni.dylib }
+          - { runner: macos-13, platform: macos-x86_64, lib: libwarpfield_jni.dylib }
+          # Linux libraries target glibc 2.17 (via zig) so they load on old clusters too
+          - { runner: ubuntu-24.04, platform: linux-x86_64, lib: libwarpfield_jni.so, zig: x86_64-unknown-linux-gnu.2.17 }
+          - { runner: ubuntu-24.04-arm, platform: linux-aarch64, lib: libwarpfield_jni.so, zig: aarch64-unknown-linux-gnu.2.17 }
+          - { runner: windows-2022, platform: windows-x86_64, lib: warpfield_jni.dll }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build (cargo)
+        if: ${{ !matrix.zig }}
+        working-directory: rust
+        run: cargo build --release -p warpfield-jni
+      - name: build (cargo zigbuild, old glibc)
+        if: ${{ matrix.zig }}
+        working-directory: rust
+        run: |
+          pip install ziglang cargo-zigbuild
+          rustup target add "${TARGET%.*}"
+          cargo zigbuild --release -p warpfield-jni --target "$TARGET"
+          mkdir -p target/release
+          cp "target/${TARGET%.*}/release/${{ matrix.lib }}" target/release/
+        env:
+          TARGET: ${{ matrix.zig }}
+      - name: stage
+        shell: bash
+        run: |
+          mkdir -p "java/native/org/warpfield/native/${{ matrix.platform }}"
+          cp "rust/target/release/${{ matrix.lib }}" "java/native/org/warpfield/native/${{ matrix.platform }}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: java/native/
+
+  test:
+    needs: native
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-13, ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+        java: ["8", "21"]
+        exclude:
+          - { runner: macos-14, java: "8" } # no Java 8 build for Apple silicon from temurin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: java/native/
+          merge-multiple: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ matrix.java == '8' && 'zulu' || 'temurin' }}
+          java-version: ${{ matrix.java }}
+      # test the libraries packaged in the jar, not a cargo build
+      - working-directory: java
+        run: mvn -B test "-Dwarpfield.library.dir="
+
+  jar:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: java/native/
+          merge-multiple: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - working-directory: java
+        run: mvn -B package -DskipTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warpfield-jar
+          path: java/target/warpfield-*.jar

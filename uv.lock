@@ -9,6 +9,12 @@ resolution-markers = [
     "python_full_version < '3.12' and platform_python_implementation == 'PyPy'",
 ]
 
+[manifest]
+members = [
+    "warpfield",
+    "zarr-warpfield",
+]
+
 [[package]]
 name = "attrs"
 version = "26.1.0"
@@ -1429,6 +1435,69 @@ wheels = [
 ]
 
 [[package]]
+name = "warpfield"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "zstandard" },
+]
+
+[package.optional-dependencies]
+fast = [
+    { name = "warpfield-rs" },
+]
+zarr = [
+    { name = "zarr-warpfield" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "jsonschema" },
+    { name = "matplotlib" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "zarr", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "zarr-warpfield" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.25" },
+    { name = "warpfield-rs", marker = "extra == 'fast'", directory = "rust/warpfield-py" },
+    { name = "zarr-warpfield", marker = "extra == 'zarr'", editable = "plugins/zarr" },
+    { name = "zstandard", specifier = ">=0.22" },
+]
+provides-extras = ["fast", "zarr"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "jsonschema", specifier = ">=4" },
+    { name = "matplotlib", specifier = ">=3.8" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "scipy", specifier = ">=1.11" },
+    { name = "zarr", specifier = ">=3" },
+    { name = "zarr-warpfield", editable = "plugins/zarr" },
+]
+
+[[package]]
+name = "warpfield-rs"
+version = "0.1.0"
+source = { directory = "rust/warpfield-py" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.25" }]
+
+[[package]]
 name = "zarr"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1475,64 +1544,25 @@ wheels = [
 [[package]]
 name = "zarr-warpfield"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "plugins/zarr" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "zstandard" },
+    { name = "warpfield" },
+    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "zarr", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [package.optional-dependencies]
-codec = [
-    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "zarr", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
 fast = [
-    { name = "zarr-warpfield-rs" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "jsonschema" },
-    { name = "matplotlib" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "zarr", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "warpfield", extra = ["fast"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy", specifier = ">=1.25" },
-    { name = "zarr", marker = "extra == 'codec'", specifier = ">=3" },
-    { name = "zarr-warpfield-rs", marker = "extra == 'fast'", directory = "rust/warpfield-py" },
-    { name = "zstandard", specifier = ">=0.22" },
-]
-provides-extras = ["codec", "fast"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "jsonschema", specifier = ">=4" },
-    { name = "matplotlib", specifier = ">=3.8" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "scipy", specifier = ">=1.11" },
+    { name = "warpfield", editable = "." },
+    { name = "warpfield", extras = ["fast"], marker = "extra == 'fast'", editable = "." },
     { name = "zarr", specifier = ">=3" },
 ]
-
-[[package]]
-name = "zarr-warpfield-rs"
-version = "0.1.0"
-source = { directory = "rust/warpfield-py" }
-dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=1.25" }]
+provides-extras = ["fast"]
 
 [[package]]
 name = "zstandard"

@@ -1,13 +1,13 @@
 [package]
 name = "warpfield-py"
-description = "Python bindings for the warpfield codec (module zarr_warpfield_rs)"
+description = "Python bindings for the warpfield codec (module warpfield_rs)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
 [lib]
-name = "zarr_warpfield_rs"
+name = "warpfield_rs"
 crate-type = ["cdylib"]
 
 [dependencies]

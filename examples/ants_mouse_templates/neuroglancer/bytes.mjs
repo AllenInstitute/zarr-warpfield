@@ -1,0 +1,28 @@
+import { readFileSync } from "fs";
+import { chromium } from "playwright";
+const [stateFile] = process.argv.slice(2);
+const state = JSON.parse(readFileSync(stateFile, "utf8"));
+const b = await chromium.launch({ args: ["--use-gl=angle", "--enable-unsafe-swiftshader"] });
+const ctx = await b.newContext({ viewport: { width: 1400, height: 900 } });
+const p = await ctx.newPage();
+const stats = {};
+const t0 = Date.now();
+let last = 0;
+ctx.on("requestfinished", async (req) => {
+  const u = req.url();
+  const m = u.match(/(spim|stpt)[^/]*\/[^/]*\/template\.ome\.zarr\/(s\d)\//) || u.match(/127\.0\.0\.1:9077\/[^/]+\/(s\d|bounds)/);
+  if (!m) return;
+  const k = m[2] ? `${m[1]} ${m[2]}` : `field ${m[1]}`;
+  const sz = (await req.sizes()).responseBodySize;
+  stats[k] ??= { n: 0, mb: 0 };
+  stats[k].n++; stats[k].mb += sz / 1e6;
+  last = Math.max(last, Date.now() - t0);
+});
+await p.goto(`http://localhost:8097/#!${encodeURIComponent(JSON.stringify(state))}`);
+await p.waitForFunction("window.viewer !== undefined");
+await p.waitForFunction(() => window.viewer.isReady(), null, { timeout: 300000, polling: 100 });
+const ready = Date.now() - t0;
+await p.waitForTimeout(1500);
+for (const [k, v] of Object.entries(stats).sort()) console.log(k.padEnd(12), String(v.n).padStart(4), v.mb.toFixed(1).padStart(7), "MB");
+console.log("ready", ready, "ms; last chunk response", last, "ms");
+await b.close();

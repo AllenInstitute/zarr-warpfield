@@ -29,10 +29,10 @@ from typing import Any
 
 import numpy as np
 
-from zarr_warpfield import _backend
-from zarr_warpfield import format as fmt
-from zarr_warpfield import jacobian as jac
-from zarr_warpfield.predict import (
+from warpfield import _backend
+from warpfield import format as fmt
+from warpfield import jacobian as jac
+from warpfield.predict import (
     BOUNDARIES,
     PREDICTORS,
     known,

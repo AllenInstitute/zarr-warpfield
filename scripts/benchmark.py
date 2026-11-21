@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from zarr_warpfield import Config, JacobianConfig, chunked, jacobian, seams, synth
+from warpfield import Config, JacobianConfig, chunked, jacobian, seams, synth
 
 MIN_DET = 0.1
 

@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from zarr_warpfield import Config, JacobianConfig, _backend, chunked, core, synth
-from zarr_warpfield import format as fmt
+from warpfield import Config, JacobianConfig, _backend, chunked, core, synth
+from warpfield import format as fmt
 
 pytestmark = pytest.mark.skipif(not _backend.available(), reason="zarr-warpfield-rs not built")
 

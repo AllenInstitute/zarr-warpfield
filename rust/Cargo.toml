@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["warpfield", "warpfield-py", "warpfield-wasm"]
+members = ["warpfield", "warpfield-py", "warpfield-wasm", "warpfield-jni"]
 
 [workspace.package]
 version = "0.1.0"

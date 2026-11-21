@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from zarr_warpfield import Config, JacobianConfig, WarpFieldSpecError, decode, encode
-from zarr_warpfield import format as fmt
-from zarr_warpfield.core import VERBATIM
+from warpfield import Config, JacobianConfig, WarpFieldSpecError, decode, encode
+from warpfield import format as fmt
+from warpfield.core import VERBATIM
 
 S2 = ("spatial", "spatial", "component")
 
@@ -103,7 +103,7 @@ def test_extrapolate_baseline_is_bounded():
 
 def test_jacobian_promotes_samples():
     # A one-cell compression ramp (det ~ 0.2) that the default bound can fold.
-    from zarr_warpfield.jacobian import det_jacobian, violations
+    from warpfield.jacobian import det_jacobian, violations
 
     rng = np.random.default_rng(3)
     y, x = np.mgrid[0:64, 0:64].astype(np.float64)

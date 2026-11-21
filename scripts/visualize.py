@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from scipy import ndimage  # noqa: E402
 
-from zarr_warpfield import Config, JacobianConfig, chunked, inverse, jacobian, synth  # noqa: E402
+from warpfield import Config, JacobianConfig, chunked, inverse, jacobian, synth  # noqa: E402
 
 LABEL_COLORS = {
     1: (0.90, 0.10, 0.10),  # slip crack

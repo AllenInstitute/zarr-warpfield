@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from zarr_warpfield import Config, chunked, inverse, synth
+from warpfield import Config, chunked, inverse, synth
 
 
 @pytest.fixture(scope="module")

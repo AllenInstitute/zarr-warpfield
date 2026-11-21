@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from benchmark import MIN_DET
-from zarr_warpfield import Config, JacobianConfig, _backend, chunked, core, synth
+from warpfield import Config, JacobianConfig, _backend, chunked, core, synth
 
 
 def chunks_of(p, u):

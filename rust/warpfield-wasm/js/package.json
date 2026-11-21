@@ -1,5 +1,5 @@
 {
-  "name": "@zarr-warpfield/wasm",
+  "name": "@warpfield/wasm",
   "version": "0.1.0",
   "description": "warpfield codec (error-bounded, seam-free registration-field compression) in WebAssembly",
   "license": "Apache-2.0",

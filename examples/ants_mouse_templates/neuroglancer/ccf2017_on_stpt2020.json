@@ -1,0 +1,79 @@
+{
+ "dimensions": {
+  "x": [
+   1e-05,
+   "m"
+  ],
+  "y": [
+   1e-05,
+   "m"
+  ],
+  "z": [
+   1e-05,
+   "m"
+  ]
+ },
+ "crossSectionScale": 2.2,
+ "projectionScale": 2500,
+ "layout": "4panel",
+ "layers": [
+  {
+   "type": "image",
+   "name": "STPT 2020 template",
+   "source": "zarr3://https://allen-atlas-assets.s3.us-west-2.amazonaws.com/templates/allen-adult-mouse-stpt-template/2020/template.ome.zarr/",
+   "shaderControls": {
+    "normalized": {
+     "range": [
+      0,
+      500
+     ]
+    }
+   }
+  },
+  {
+   "type": "segmentation",
+   "name": "CCF 2017 annotation (native)",
+   "source": {
+    "url": "precomputed://https://allen-atlas-assets.s3.us-west-2.amazonaws.com/annotation-sets/allen-adult-mouse-annotation/2017/annotations.precomputed",
+    "transform": {
+     "outputDimensions": {
+      "z": [
+       0.001,
+       "m"
+      ],
+      "y": [
+       0.001,
+       "m"
+      ],
+      "x": [
+       0.001,
+       "m"
+      ]
+     },
+     "matrix": [
+      [
+       0.0,
+       -1.0,
+       0.0,
+       5.225
+      ],
+      [
+       0.0,
+       0.0,
+       -1.0,
+       5.355
+      ],
+      [
+       1.0,
+       0.0,
+       0.0,
+       -5.7
+      ]
+     ]
+    }
+   },
+   "selectedAlpha": 0.35,
+   "objectAlpha": 0.6
+  }
+ ]
+}

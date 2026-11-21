@@ -13,8 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from zarr_warpfield import Config, JacobianConfig, chunked, core, synth
-from zarr_warpfield import format as fmt
+from warpfield import Config, JacobianConfig, chunked, core, synth
+from warpfield import format as fmt
 
 JS = Path(__file__).resolve().parents[1] / "rust" / "warpfield-wasm" / "js"
 WASM = JS / "warpfield.wasm"

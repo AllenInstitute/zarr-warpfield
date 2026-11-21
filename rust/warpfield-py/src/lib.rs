@@ -1,6 +1,6 @@
-//! Python module `zarr_warpfield_rs`: the Rust warpfield encoder/decoder.
+//! Python module `warpfield_rs`: the Rust warpfield encoder/decoder.
 //!
-//! Low-level on purpose; `zarr_warpfield` wraps it. The configuration is
+//! Low-level on purpose; the `warpfield` package wraps it. The configuration is
 //! passed as the JSON text of the codec's `configuration` object. The GIL is
 //! released while coding, so zarr's thread pool decodes chunks in parallel.
 
@@ -10,8 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use warpfield::{Config, Element, EncodeOptions, Error};
 
-pyo3::create_exception!(zarr_warpfield_rs, SpecError, PyValueError);
-pyo3::create_exception!(zarr_warpfield_rs, FormatError, PyValueError);
+pyo3::create_exception!(warpfield_rs, SpecError, PyValueError);
+pyo3::create_exception!(warpfield_rs, FormatError, PyValueError);
 
 fn err(e: Error) -> PyErr {
     match e {
@@ -161,7 +161,7 @@ fn validate(config: &str) -> PyResult<()> {
 }
 
 #[pymodule]
-fn zarr_warpfield_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn warpfield_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encode, m)?)?;
     m.add_function(wrap_pyfunction!(decode, m)?)?;
     m.add_function(wrap_pyfunction!(decode_into, m)?)?;

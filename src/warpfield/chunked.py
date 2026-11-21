@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from zarr_warpfield.core import Config, decode, encode
+from warpfield.core import Config, decode, encode
 
 
 @dataclass

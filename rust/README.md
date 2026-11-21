@@ -1,8 +1,8 @@
 # warpfield in Rust
 
-A Rust implementation of the zarr v3 `warpfield` codec, with Python and
-WebAssembly/TypeScript bindings. It is a line-for-line port of the numpy
-reference in `src/zarr_warpfield`: same float64 operation order, same visiting
+A Rust implementation of the zarr v3 `warpfield` codec, with Python,
+WebAssembly/TypeScript and Java bindings. It is a line-for-line port of the numpy
+reference in `src/warpfield`: same float64 operation order, same visiting
 order, round-half-even quantization. So it emits the same quantization codes and
 class lists, and decodes to bit-identical values. The byte format is the one in
 the spec; only the zstd frames can differ between zstd libraries and levels.
@@ -10,9 +10,10 @@ the spec; only the zstd frames can differ between zstd libraries and levels.
 ```
 rust/
 ├── warpfield/          core crate: encode / decode, no Python or JS dependencies
-├── warpfield-py/       PyO3 module `zarr_warpfield_rs` (maturin, abi3 >= 3.11)
-└── warpfield-wasm/     wasm32 cdylib with a plain C ABI
-    └── js/             TypeScript wrapper, package `@zarr-warpfield/wasm`
+├── warpfield-py/       PyO3 module `warpfield_rs`, package `warpfield-rs` (maturin, abi3 >= 3.11)
+├── warpfield-wasm/     wasm32 cdylib with a plain C ABI
+│   └── js/             TypeScript wrapper, package `@warpfield/wasm`
+└── warpfield-jni/      JNI cdylib `warpfield_jni`, the native half of ../java (org.warpfield.Warpfield)
 ```
 
 ## Core crate
@@ -51,8 +52,8 @@ cargo test -p warpfield --no-default-features --features zstd-pure,json
 uv sync --extra fast        # from the repo root; or: pip install ./rust/warpfield-py
 ```
 
-`zarr_warpfield.encode` / `decode` and the zarr codec use the Rust backend
-whenever `zarr_warpfield_rs` imports. Set `ZARR_WARPFIELD_BACKEND=python` to
+`warpfield.encode` / `decode` (and so the tiles helpers and the zarr codec) use
+the Rust backend whenever `warpfield_rs` imports. Set `WARPFIELD_BACKEND=python` to
 force numpy, or pass `backend="rust" | "python"` per call. The GIL is
 released, and `WarpFieldCodec` codes chunks with `asyncio.to_thread`, so zarr
 reads decode in parallel.
@@ -60,7 +61,7 @@ reads decode in parallel.
 The low-level module:
 
 ```python
-import json, zarr_warpfield_rs as rs
+import json, warpfield_rs as rs
 buf, classes, n_codes, n_tight, n_verbatim, rounds = rs.encode(arr, json.dumps(cfg), classes=True, zstd_level=19)
 out = rs.decode(buf, arr.shape, "float32", json.dumps(cfg))
 rs.decode_into(buf, out_array, json.dumps(cfg))    # into an existing C-contiguous array
@@ -81,7 +82,7 @@ npm test                 # node --test (node >= 22.18 runs the .ts directly)
 ```
 
 ```ts
-import { WarpField } from "@zarr-warpfield/wasm";
+import { WarpField } from "@warpfield/wasm";
 
 const wf = await WarpField.instantiate(fetch(new URL("warpfield.wasm", import.meta.url)));
 const config = zarrMetadata.codecs.find((c) => c.name === "warpfield").configuration;

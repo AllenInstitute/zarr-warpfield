@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from benchmark import MIN_DET, cross_chunk, zfp_roundtrip
-from zarr_warpfield import Config, JacobianConfig, chunked, jacobian, seams, synth
+from warpfield import Config, JacobianConfig, chunked, jacobian, seams, synth
 
 ZFP_TOL = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
 WF_EPS = [0.1, 0.25, 0.5, 1.0]

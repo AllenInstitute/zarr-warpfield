@@ -1,0 +1,68 @@
+{
+ "dimensions": {
+  "x": [
+   1e-05,
+   "m"
+  ],
+  "y": [
+   1e-05,
+   "m"
+  ],
+  "z": [
+   1e-05,
+   "m"
+  ]
+ },
+ "layers": [
+  {
+   "type": "image",
+   "name": "STPT template",
+   "source": "zarr3://https://allen-atlas-assets.s3.us-west-2.amazonaws.com/templates/allen-adult-mouse-stpt-template/2020/template.ome.zarr/",
+   "shaderControls": {
+    "normalized": {
+     "range": [
+      0,
+      500
+     ]
+    }
+   },
+   "visible": true
+  },
+  {
+   "type": "image",
+   "name": "forward field",
+   "source": {
+    "url": "zarr3://http://127.0.0.1:9077/forward.ome.zarr/",
+    "transform": {
+     "outputDimensions": {
+      "c^": [
+       1,
+       ""
+      ],
+      "z": [
+       1e-05,
+       "m"
+      ],
+      "y": [
+       1e-05,
+       "m"
+      ],
+      "x": [
+       1e-05,
+       "m"
+      ]
+     }
+    }
+   },
+   "opacity": 0.7,
+   "shader": "// Displacement-field shader for a warpfield OME-Zarr image layer whose vector\n// axis is a channel dimension (\"c^\"). Shows either\n//  - det J of x -> x + u(x), computed here from neighbouring voxels of the\n//    chunk (central differences inside the chunk, one-sided on chunk faces):\n//    blue = compression, white = volume preserved, red = expansion,\n//    yellow = det J <= min_det (near or past a fold); or\n//  - the displacement minus a constant offset, as signed RGB\n//    (gray = no residual displacement).\n#uicontrol bool show_det_j checkbox(default=true)\n#uicontrol float log2_range slider(min=0.1, max=3.0, default=1.0)\n#uicontrol float min_det slider(min=0.0, max=1.0, default=0.1)\n#uicontrol float spacing_mm slider(min=0.001, max=0.2, default=0.025)\n#uicontrol float range_mm slider(min=0.05, max=2.0, default=0.5)\n#uicontrol float offset0 slider(min=-10, max=10, default=5.2394)\n#uicontrol float offset1 slider(min=-10, max=10, default=5.2192)\n#uicontrol float offset2 slider(min=-10, max=10, default=-5.6828)\n\n// getDataValueAt(p, c) indexes the chunk in its own axes, whatever the view\n// orientation: for a (c, k, j, i) zarr array, p = (i, j, k). Component c is the\n// displacement along array axis c of (k, j, i), i.e. along p[2 - c].\n\n// d u_c / d p[b], per mm (field sample spacing spacing_mm).\nfloat du(int c, int b) {\n  ivec3 size = ivec3(uChunkDataSize);\n  ivec3 p = clamp(ivec3(floor(vChunkPosition)), ivec3(0), size - 1);\n  ivec3 e = ivec3(0);\n  e[b] = 1;\n  ivec3 lo = max(p - e, ivec3(0));\n  ivec3 hi = min(p + e, size - 1);\n  int n = hi[b] - lo[b];\n  if (n == 0) return 0.0;\n  return (getDataValueAt(hi, c) - getDataValueAt(lo, c)) / (float(n) * spacing_mm);\n}\n\nvoid main() {\n  if (!show_det_j) {\n    vec3 u = vec3(getDataValue(0), getDataValue(1), getDataValue(2)) -\n             vec3(offset0, offset1, offset2);\n    emitRGB(clamp(0.5 + 0.5 * u / range_mm, 0.0, 1.0));\n    return;\n  }\n  mat3 J;  // J[col][row]: row = component a, col = array axis b\n  for (int a = 0; a < 3; ++a) {\n    for (int b = 0; b < 3; ++b) {\n      J[b][a] = (a == b ? 1.0 : 0.0) + du(a, 2 - b);\n    }\n  }\n  float d = determinant(J);\n  if (d <= min_det) {\n    emitRGB(vec3(1.0, 0.9, 0.0));\n    return;\n  }\n  float t = clamp(log2(d) / log2_range, -1.0, 1.0);\n  emitRGB(t < 0.0 ? mix(vec3(1.0), vec3(0.15, 0.35, 0.9), -t)\n                  : mix(vec3(1.0), vec3(0.85, 0.15, 0.1), t));\n}\n",
+   "visible": true,
+   "shaderControls": {
+    "show_det_j": false
+   }
+  }
+ ],
+ "layout": "4panel",
+ "crossSectionScale": 2.2,
+ "projectionScale": 2500
+}

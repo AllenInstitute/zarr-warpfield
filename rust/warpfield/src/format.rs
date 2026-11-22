@@ -3,22 +3,27 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic  b"WFLD"
-//! 4       1     format version (1)
+//! 4       1     format version (2; version 1 is still read)
 //! 5       1     rank R of the canonical array (batch axis + predicted axes)
-//! 6       2     reserved, zero
+//! 6       1     code coder: 0 zigzag LEB128 varints, 1 canonical Huffman (v2)
+//! 7       1     reserved, zero
 //! 8       8*R   canonical shape, little-endian uint64
+//! ...     2*8   level schedule alpha, beta, little-endian float64 (v2 only)
 //! ...     4*4   byte lengths of the four sections, little-endian uint32
 //! ...     3*8   counts: quantization codes, tight indices, verbatim indices (uint64)
-//! ...           section 0: quantization codes, zigzag LEB128 varints, zstd frame
+//! ...           section 0: quantization codes (coder above), zstd frame
 //!               section 1: tight-class sample indices, delta + LEB128, zstd frame
 //!               section 2: verbatim sample indices, delta + LEB128, zstd frame
 //!               section 3: verbatim values, raw little-endian data type, zstd frame
 //! ```
 
 use crate::error::{Result, format};
+use crate::pass::Schedule;
 
 pub const MAGIC: &[u8; 4] = b"WFLD";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
+pub const CODER_VARINT: u8 = 0;
+pub const CODER_HUFFMAN: u8 = 1;
 
 #[inline(always)]
 pub fn zigzag(q: i64) -> u64 {
@@ -92,39 +97,60 @@ fn unpack_indices(buf: &[u8], count: usize) -> Result<Vec<usize>> {
 
 pub(crate) struct Chunk {
     pub shape: Vec<usize>,
+    pub schedule: Schedule,
     pub codes: Vec<i64>,
     pub tight: Vec<usize>,
     pub verbatim: Vec<usize>,
     pub values: Vec<u8>, // raw little-endian verbatim values
 }
 
+pub(crate) fn varint_codes(codes: &[i64]) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(codes.len() + codes.len() / 4);
+    for &q in codes {
+        put_varint(&mut raw, zigzag(q));
+    }
+    raw
+}
+
+/// Section 0 both ways (varints and Huffman, each then zstd); the smaller wins.
+fn code_section(codes: &[i64], level: i32) -> Result<(u8, Vec<u8>)> {
+    let v = crate::frames::compress(&varint_codes(codes), level)?;
+    let h = crate::frames::compress(&crate::huffman::encode(codes), level)?;
+    Ok(if h.len() < v.len() {
+        (CODER_HUFFMAN, h)
+    } else {
+        (CODER_VARINT, v)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write(
     shape: &[usize],
+    schedule: Schedule,
     codes: &[i64],
     tight: &[usize],
     verbatim: &[usize],
     values: &[u8],
     level: i32,
 ) -> Result<Vec<u8>> {
-    let mut raw0 = Vec::with_capacity(codes.len() + codes.len() / 4);
-    for &q in codes {
-        put_varint(&mut raw0, zigzag(q));
-    }
+    let (coder, sec0) = code_section(codes, level)?;
     let sections = [
-        crate::frames::compress(&raw0, level)?,
+        sec0,
         crate::frames::compress(&pack_indices(tight), level)?,
         crate::frames::compress(&pack_indices(verbatim), level)?,
         crate::frames::compress(values, level)?,
     ];
     let total: usize = sections.iter().map(Vec::len).sum();
-    let mut out = Vec::with_capacity(8 + 8 * shape.len() + 16 + 24 + total);
+    let mut out = Vec::with_capacity(8 + 8 * shape.len() + 16 + 16 + 24 + total);
     out.extend_from_slice(MAGIC);
     out.push(VERSION);
     out.push(shape.len() as u8);
-    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&[coder, 0]);
     for &s in shape {
         out.extend_from_slice(&(s as u64).to_le_bytes());
     }
+    out.extend_from_slice(&schedule.alpha.to_le_bytes());
+    out.extend_from_slice(&schedule.beta.to_le_bytes());
     for s in &sections {
         out.extend_from_slice(&(s.len() as u32).to_le_bytes());
     }
@@ -165,14 +191,30 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
         return format("not a warpfield chunk (bad magic)");
     }
     let head = r.take(4)?;
-    if head[0] != VERSION {
-        return format(format!("unsupported warpfield format version {}", head[0]));
+    let version = head[0];
+    if version != 1 && version != 2 {
+        return format(format!("unsupported warpfield format version {version}"));
     }
     let rank = head[1] as usize;
+    let coder = head[2];
+    if (version == 1 && coder != CODER_VARINT) || coder > CODER_HUFFMAN {
+        return format(format!("unknown code coder {coder}"));
+    }
     let mut shape = Vec::with_capacity(rank);
     for _ in 0..rank {
         shape.push(r.u64()? as usize);
     }
+    let schedule = if version == 1 {
+        Schedule::UNIFORM
+    } else {
+        let alpha = f64::from_le_bytes(r.take(8)?.try_into().unwrap());
+        let beta = f64::from_le_bytes(r.take(8)?.try_into().unwrap());
+        #[allow(clippy::neg_cmp_op_on_partial_ord)] // rejects NaN too
+        if !(alpha >= 1.0 && beta >= 1.0 && alpha.is_finite() && beta.is_finite()) {
+            return format("level schedule alpha and beta must be finite and >= 1");
+        }
+        Schedule { alpha, beta }
+    };
     let mut lens = [0usize; 4];
     for l in &mut lens {
         *l = r.u32()? as usize;
@@ -188,8 +230,13 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
     for &l in &lens {
         raw.push(crate::frames::decompress(r.take(l)?)?);
     }
-    let mut codes = Vec::with_capacity(n_codes);
-    read_varints(&raw[0], n_codes, |z| codes.push(unzigzag(z)))?;
+    let codes = if coder == CODER_HUFFMAN {
+        crate::huffman::decode(&raw[0], n_codes)?
+    } else {
+        let mut codes = Vec::with_capacity(n_codes);
+        read_varints(&raw[0], n_codes, |z| codes.push(unzigzag(z)))?;
+        codes
+    };
     let tight = unpack_indices(&raw[1], n_tight)?;
     let verbatim = unpack_indices(&raw[2], n_verb)?;
     if tight.iter().chain(&verbatim).any(|&i| i >= n) {
@@ -201,6 +248,7 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
     }
     Ok(Chunk {
         shape,
+        schedule,
         codes,
         tight,
         verbatim,

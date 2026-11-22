@@ -2,16 +2,21 @@
 
     offset  size  field
     0       4     magic  b"WFLD"
-    4       1     format version (1)
+    4       1     format version (2; version 1 is still read)
     5       1     rank R of the canonical array (batch axis + predicted axes)
-    6       2     reserved, zero
+    6       1     code coder: 0 zigzag LEB128 varints, 1 canonical Huffman (v2)
+    7       1     reserved, zero
     8       8*R   canonical shape, little-endian uint64
+    ...     2*8   level schedule alpha, beta, little-endian float64 (v2 only)
     ...     4*4   byte lengths of the four sections, little-endian uint32
     ...     3*8   counts: quantization codes, tight indices, verbatim indices (uint64)
-    ...           section 0: quantization codes, zigzag LEB128 varints, zstd frame
+    ...           section 0: quantization codes (coder above), zstd frame
                   section 1: tight-class sample indices, delta + LEB128, zstd frame
                   section 2: verbatim sample indices, delta + LEB128, zstd frame
                   section 3: verbatim values, raw little-endian data_type, zstd frame
+
+The encoder writes section 0 both ways and keeps the smaller. Version 1 chunks
+(varints, uniform schedule) decode unchanged.
 
 Sample indices are linear (C-order) indices into the canonical array; see
 `core.layout`.
@@ -26,7 +31,9 @@ import numpy as np
 import zstandard
 
 MAGIC = b"WFLD"
-VERSION = 1
+VERSION = 2
+CODER_VARINT, CODER_HUFFMAN = 0, 1
+UNIFORM = (1.0, 1.0)
 ZSTD_LEVEL = 19
 
 # zstandard contexts are not thread-safe; zarr codes chunks on a thread pool
@@ -109,10 +116,16 @@ def write_chunk(
     tight: np.ndarray,
     verbatim: np.ndarray,
     verbatim_values: np.ndarray,
+    schedule: tuple[float, float] = UNIFORM,
 ) -> bytes:
+    from warpfield import huffman
+
     cctx = _ctx()[0]
+    var = cctx.compress(varint_encode(zigzag(codes)))
+    huf = cctx.compress(huffman.encode(codes))
+    coder, sec0 = (CODER_HUFFMAN, huf) if len(huf) < len(var) else (CODER_VARINT, var)
     sections = [
-        cctx.compress(varint_encode(zigzag(codes))),
+        sec0,
         cctx.compress(pack_indices(tight)),
         cctx.compress(pack_indices(verbatim)),
         cctx.compress(
@@ -121,23 +134,46 @@ def write_chunk(
             .tobytes()
         ),
     ]
-    head = MAGIC + struct.pack("<BBH", VERSION, len(shape), 0)
+    head = MAGIC + struct.pack("<BBBB", VERSION, len(shape), coder, 0)
     head += struct.pack(f"<{len(shape)}Q", *shape)
+    head += struct.pack("<2d", *(float(v) for v in schedule))
     head += struct.pack("<4I", *(len(s) for s in sections))
     # counts are needed to split the varint streams; keep them in the header too
     head += struct.pack("<3Q", codes.size, len(tight), len(verbatim))
     return head + b"".join(sections)
 
 
-def read_chunk(buf: bytes, dtype: np.dtype):
+def read_header(buf: bytes):
+    """(version, coder, canonical shape, schedule (alpha, beta), offset of the lengths)."""
     if buf[:4] != MAGIC:
         raise WarpFieldFormatError("not a warpfield chunk (bad magic)")
-    version, rank, _ = struct.unpack_from("<BBH", buf, 4)
-    if version != VERSION:
-        raise WarpFieldFormatError(f"unsupported warpfield format version {version}")
-    o = 8
-    shape = struct.unpack_from(f"<{rank}Q", buf, o)
-    o += 8 * rank
+    try:
+        version, rank, coder, _ = struct.unpack_from("<BBBB", buf, 4)
+        if version not in (1, 2):
+            raise WarpFieldFormatError(f"unsupported warpfield format version {version}")
+        if (version == 1 and coder != CODER_VARINT) or coder > CODER_HUFFMAN:
+            raise WarpFieldFormatError(f"unknown code coder {coder}")
+        o = 8
+        shape = struct.unpack_from(f"<{rank}Q", buf, o)
+        o += 8 * rank
+        schedule = UNIFORM
+        if version == 2:
+            schedule = struct.unpack_from("<2d", buf, o)
+            o += 16
+            a, b = schedule
+            if not (np.isfinite(a) and np.isfinite(b) and a >= 1 and b >= 1):
+                raise WarpFieldFormatError(
+                    "level schedule alpha and beta must be finite and >= 1"
+                )
+    except struct.error:
+        raise WarpFieldFormatError("truncated chunk") from None
+    return version, coder, tuple(int(s) for s in shape), schedule, o
+
+
+def read_chunk(buf: bytes, dtype: np.dtype):
+    from warpfield import huffman
+
+    _, coder, shape, _, o = read_header(buf)
     lens = struct.unpack_from("<4I", buf, o)
     o += 16
     n_codes, n_tight, n_verb = struct.unpack_from("<3Q", buf, o)
@@ -149,10 +185,13 @@ def read_chunk(buf: bytes, dtype: np.dtype):
         # pure-Rust/wasm encoder) are valid too
         raw.append(dctx.decompressobj().decompress(buf[o : o + n]))
         o += n
-    codes = unzigzag(varint_decode(raw[0], n_codes))
+    if coder == CODER_HUFFMAN:
+        codes = huffman.decode(raw[0], n_codes)
+    else:
+        codes = unzigzag(varint_decode(raw[0], n_codes))
     tight = unpack_indices(raw[1], n_tight)
     verb = unpack_indices(raw[2], n_verb)
     vals = np.frombuffer(raw[3], dtype=np.dtype(dtype).newbyteorder("<")).astype(dtype)
     if vals.size != n_verb:
         raise WarpFieldFormatError("verbatim value count mismatch")
-    return tuple(int(s) for s in shape), codes, tight, verb, vals
+    return shape, codes, tight, verb, vals

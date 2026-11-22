@@ -25,16 +25,19 @@ mod element;
 mod error;
 mod format;
 mod frames;
+mod huffman;
 mod jacobian;
 mod layout;
 mod pass;
 mod predict;
+mod tune;
 
 pub use config::{Boundary, Config, JacobianConfig, Predictor, Role};
 pub use config::{FACE, INTERIOR, TIGHT, VERBATIM};
 pub use element::Element;
 pub use error::{Error, Result};
 pub use layout::Layout;
+pub use pass::Schedule;
 
 use std::marker::PhantomData;
 
@@ -49,6 +52,8 @@ pub struct EncodeOptions {
     pub zstd_level: i32,
     /// Also return the per-sample error class map.
     pub classes: bool,
+    /// Level schedule; None picks one per chunk (see `tune`).
+    pub schedule: Option<Schedule>,
 }
 
 impl Default for EncodeOptions {
@@ -56,6 +61,7 @@ impl Default for EncodeOptions {
         EncodeOptions {
             zstd_level: DEFAULT_ZSTD_LEVEL,
             classes: false,
+            schedule: None,
         }
     }
 }
@@ -95,30 +101,30 @@ fn check(cfg: &Config, shape: &[usize], len: usize) -> Result<Layout> {
     Ok(lay)
 }
 
-/// Encode one chunk (C order, `shape` matching `cfg.axis_roles`).
-pub fn encode<T: Element>(
-    data: &[T],
-    shape: &[usize],
+/// The closed loop on one canonical array: code it with `sched`, then, with a
+/// Jacobian constraint, tighten or store verbatim the samples of violating
+/// cells until none are left. Returns (classes, codes, rounds).
+pub(crate) fn code_canonical<T: Element>(
     cfg: &Config,
-    opts: &EncodeOptions,
-) -> Result<Encoded> {
-    let lay = check(cfg, shape, data.len())?;
+    lay: &Layout,
+    x: &[f64],
+    sched: Schedule,
+) -> Result<(Vec<u8>, Vec<i64>, usize)> {
     let cshape = lay.canonical_shape();
-    let n = lay.size();
-    let x: Vec<f64> = lay.to_canonical(data, T::to_f64);
-    let base = lay.face_classes();
+    let n = x.len();
+    let base = layout::face_classes(&cshape);
     let eps = cfg.eps_table();
     let eps_tight = cfg.eps_tight();
     let geo = cfg
         .jacobian
         .as_ref()
-        .map(|j| jacobian::Geometry::new(&lay, &j.grid_spacing));
-    let d0 = geo.as_ref().map(|g| g.det(&x));
+        .map(|j| jacobian::Geometry::new(lay, &j.grid_spacing));
+    let d0 = geo.as_ref().map(|g| g.det(x));
     let mut forced_tight = vec![false; n];
     let mut forced_verb = vec![false; n];
     let mut recon = vec![0.0f64; n];
     let mut rounds = 0usize;
-    let (cls, codes) = loop {
+    loop {
         let mut cls = base.clone();
         for i in 0..n {
             if forced_verb[i] {
@@ -129,20 +135,20 @@ pub fn encode<T: Element>(
         }
         recon.fill(0.0);
         let mut enc = pass::Encoder::<T> {
-            x: &x,
+            x,
             cls: &mut cls,
             eps,
             codes: Vec::new(),
             _t: PhantomData,
         };
-        pass::run(cfg, &cshape, &mut recon, &mut enc);
+        pass::run(cfg, sched, &cshape, &mut recon, &mut enc);
         let codes = enc.codes;
         let (Some(g), Some(d0), Some(jc)) = (&geo, &d0, &cfg.jacobian) else {
-            break (cls, codes);
+            return Ok((cls, codes, rounds));
         };
         let bad = jacobian::violations(d0, &g.det(&recon), jc.min_det);
         if !bad.iter().any(|&b| b) {
-            break (cls, codes);
+            return Ok((cls, codes, rounds));
         }
         rounds += 1;
         let mut hit = vec![false; n];
@@ -165,14 +171,48 @@ pub fn encode<T: Element>(
             // verbatim cells reproduce the original determinant exactly
             return Err(Error::Spec("jacobian promotion made no progress".into()));
         }
+    }
+}
+
+/// Encode one chunk (C order, `shape` matching `cfg.axis_roles`).
+pub fn encode<T: Element>(
+    data: &[T],
+    shape: &[usize],
+    cfg: &Config,
+    opts: &EncodeOptions,
+) -> Result<Encoded> {
+    let lay = check(cfg, shape, data.len())?;
+    let cshape = lay.canonical_shape();
+    let n = lay.size();
+    let x: Vec<f64> = lay.to_canonical(data, T::to_f64);
+    let sched = match opts.schedule {
+        Some(s) => {
+            #[allow(clippy::neg_cmp_op_on_partial_ord)] // rejects NaN too
+            if !(s.alpha >= 1.0 && s.beta >= 1.0 && s.alpha.is_finite() && s.beta.is_finite()) {
+                return Err(Error::Spec(
+                    "schedule alpha and beta must be finite and >= 1".into(),
+                ));
+            }
+            s
+        }
+        None => tune::tune::<T>(cfg, &lay, &x)?,
     };
+    let (cls, codes, rounds) = code_canonical::<T>(cfg, &lay, &x, sched)?;
     let verbatim: Vec<usize> = (0..n).filter(|&i| cls[i] == VERBATIM).collect();
     let tight: Vec<usize> = (0..n).filter(|&i| cls[i] == TIGHT).collect();
     let mut values = Vec::with_capacity(verbatim.len() * T::SIZE);
     for &i in &verbatim {
         T::from_f64(x[i]).write_le(&mut values);
     }
-    let bytes = format::write(&cshape, &codes, &tight, &verbatim, &values, opts.zstd_level)?;
+    let bytes = format::write(
+        &cshape,
+        sched,
+        &codes,
+        &tight,
+        &verbatim,
+        &values,
+        opts.zstd_level,
+    )?;
     let classes = opts.classes.then(|| {
         let mut c = vec![0u8; n];
         lay.from_canonical(&cls, &mut c, |v| v);
@@ -221,7 +261,7 @@ pub fn decode_into<T: Element>(
         short: false,
         _t: PhantomData,
     };
-    pass::run(cfg, &cshape, &mut recon, &mut dec);
+    pass::run(cfg, chunk.schedule, &cshape, &mut recon, &mut dec);
     pass::check_decoded(&dec)?;
     lay.from_canonical(&recon, out, T::from_f64);
     Ok(())

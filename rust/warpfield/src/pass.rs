@@ -55,6 +55,40 @@ fn for_block(nb: usize, sb: usize, offs: &[Vec<usize>], mut f: impl FnMut(usize,
 /// What the pass does with each sample once its prediction is known.
 pub(crate) trait Quantizer {
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]);
+    /// Per-class bounds for the samples that follow (the level schedule).
+    fn set_eps(&mut self, eps: [f64; 4]);
+}
+
+/// Level schedule (QoZ / HPEZ): the level with interpolation step h = 2^L is
+/// coded at `eps / min(alpha^L, beta)`, so coarse samples, which every finer
+/// level predicts from, are coded more tightly. alpha = beta = 1 is uniform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Schedule {
+    pub alpha: f64,
+    pub beta: f64,
+}
+
+impl Schedule {
+    pub const UNIFORM: Schedule = Schedule {
+        alpha: 1.0,
+        beta: 1.0,
+    };
+
+    /// min(alpha^L, beta) for step h = 2^L, alpha^L by repeated multiplication.
+    pub fn factor(&self, h: usize) -> f64 {
+        let mut f = 1.0f64;
+        let mut s = 1usize;
+        while s < h {
+            f *= self.alpha;
+            s *= 2;
+        }
+        f.min(self.beta)
+    }
+
+    pub fn eps(&self, base: &[f64; 4], h: usize) -> [f64; 4] {
+        let f = self.factor(h);
+        base.map(|e| e / f)
+    }
 }
 
 pub(crate) struct Encoder<'a, T: Element> {
@@ -66,6 +100,9 @@ pub(crate) struct Encoder<'a, T: Element> {
 }
 
 impl<T: Element> Quantizer for Encoder<'_, T> {
+    fn set_eps(&mut self, eps: [f64; 4]) {
+        self.eps = eps;
+    }
     #[inline(always)]
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]) {
         let x = self.x[lin];
@@ -96,6 +133,9 @@ pub(crate) struct Decoder<'a, T: Element> {
 }
 
 impl<T: Element> Quantizer for Decoder<'_, T> {
+    fn set_eps(&mut self, eps: [f64; 4]) {
+        self.eps = eps;
+    }
     #[inline(always)]
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]) {
         let c = self.cls[lin];
@@ -112,7 +152,14 @@ impl<T: Element> Quantizer for Decoder<'_, T> {
 }
 
 /// Run the pass over the canonical array `recon` of shape `cshape`.
-pub(crate) fn run<Q: Quantizer>(cfg: &Config, cshape: &[usize], recon: &mut [f64], q: &mut Q) {
+pub(crate) fn run<Q: Quantizer>(
+    cfg: &Config,
+    sched: Schedule,
+    cshape: &[usize],
+    recon: &mut [f64],
+    q: &mut Q,
+) {
+    let base_eps = cfg.eps_table();
     let nb = cshape[0];
     let pshape = &cshape[1..];
     let d = pshape.len();
@@ -130,11 +177,13 @@ pub(crate) fn run<Q: Quantizer>(cfg: &Config, cshape: &[usize], recon: &mut [f64
     // anchors: the coarsest lattice (the chunk corners), predicted as zero
     let s_top = top_stride(pshape);
     let lists: Vec<Vec<usize>> = pshape.iter().map(|&n| known(s_top, n, boundary)).collect();
+    q.set_eps(sched.eps(&base_eps, s_top));
     for_block(nb, sb, &offsets(&lists), |lin, _| q.sample(lin, 0.0, recon));
 
     let mut h = s_top / 2;
     while h >= 1 {
         let tau = cfg.error_bound / ((h * h) as f64);
+        q.set_eps(sched.eps(&base_eps, h));
         for j in 0..d {
             let n = pshape[j];
             let tg = new_points(h, n, boundary);

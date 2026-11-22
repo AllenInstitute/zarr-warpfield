@@ -81,10 +81,17 @@ class WarpfieldTest {
     for (int i = 0; i < u.length; i++) {
       assertTrue(Math.abs(out[i] - u[i]) <= 0.25);
     }
-    // closed-loop prediction: decoded values re-encode to themselves
+    // closed-loop prediction: with the level schedule held fixed, decoded values
+    // re-encode to themselves
+    int z = Warpfield.DEFAULT_ZSTD_LEVEL;
+    double[] fixed =
+        Warpfield.decodeFloat64(Warpfield.encode(u, 0, SHAPE, CONFIG, z, 1.1, 1.5), SHAPE, CONFIG);
     double[] again =
-        Warpfield.decodeFloat64(Warpfield.encode(out, SHAPE, CONFIG), SHAPE, CONFIG);
-    assertArrayEquals(out, again);
+        Warpfield.decodeFloat64(
+            Warpfield.encode(fixed, 0, SHAPE, CONFIG, z, 1.1, 1.5), SHAPE, CONFIG);
+    assertArrayEquals(fixed, again);
+    assertThrows(
+        WarpfieldException.class, () -> Warpfield.encode(u, 0, SHAPE, CONFIG, z, 0.5, 2.0));
   }
 
   @Test

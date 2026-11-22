@@ -39,7 +39,9 @@ Features:
 - `json` (default): `Config::from_json`.
 
 `EncodeOptions::zstd_level` defaults to 19 like the reference. Level 3 encodes
-5–10x faster for 15–25% larger chunks.
+faster for somewhat larger chunks. `EncodeOptions::schedule` fixes the level
+schedule (`Schedule { alpha, beta }`, both ≥ 1); `None` (the default) tunes it
+per chunk. The decoder reads it from the chunk header.
 
 ```sh
 cargo test -p warpfield                                         # libzstd
@@ -62,7 +64,7 @@ The low-level module:
 
 ```python
 import json, warpfield_rs as rs
-buf, classes, n_codes, n_tight, n_verbatim, rounds = rs.encode(arr, json.dumps(cfg), classes=True, zstd_level=19)
+buf, classes, n_codes, n_tight, n_verbatim, rounds = rs.encode(arr, json.dumps(cfg), classes=True, zstd_level=19, schedule=None)
 out = rs.decode(buf, arr.shape, "float32", json.dumps(cfg))
 rs.decode_into(buf, out_array, json.dumps(cfg))    # into an existing C-contiguous array
 ```

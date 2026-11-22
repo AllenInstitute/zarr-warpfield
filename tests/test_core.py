@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from warpfield import Config, JacobianConfig, WarpFieldSpecError, decode, encode
+from warpfield import Config, JacobianConfig, WarpFieldSpecError, decode, encode, huffman
 from warpfield import format as fmt
-from warpfield.core import VERBATIM
+from warpfield.core import TUNE_CANDIDATES, VERBATIM
 
 S2 = ("spatial", "spatial", "component")
 
@@ -75,12 +75,80 @@ def test_huge_values_become_verbatim():
     check_bound(u, Config(S2, 0.25))
 
 
-def test_idempotent_recompression():
+@pytest.mark.parametrize("schedule", [(1.0, 1.0), (1.1, 1.5), (2.0, 4.0)])
+def test_idempotent_recompression(schedule):
+    # with the level schedule held fixed, decoded values are on the
+    # quantization lattice and re-encode to themselves
     u = step_field()
     cfg = Config(S2, 0.25)
-    d1 = decode(encode(u, cfg), u.shape, u.dtype, cfg)
-    d2 = decode(encode(d1, cfg), u.shape, u.dtype, cfg)
+    d1 = decode(encode(u, cfg, schedule=schedule), u.shape, u.dtype, cfg)
+    d2 = decode(encode(d1, cfg, schedule=schedule), u.shape, u.dtype, cfg)
     assert np.array_equal(d1, d2)
+
+
+@pytest.mark.parametrize("schedule", [None, (1.0, 1.0), (1.25, 2.0), (2.0, 4.0)])
+def test_schedule_keeps_bounds(schedule):
+    u = step_field()
+    cfg = Config(S2, 0.25)
+    buf = encode(u, cfg, schedule=schedule)
+    if schedule is not None:
+        assert fmt.read_header(buf)[3] == schedule
+    else:
+        assert fmt.read_header(buf)[3] in TUNE_CANDIDATES
+    check_bound(u, cfg)
+    d = decode(buf, u.shape, u.dtype, cfg)
+    assert np.abs(d.astype(np.float64) - u).max() <= 0.25
+
+
+@pytest.mark.parametrize("bad", [(0.9, 2.0), (1.5, 0.5), (float("nan"), 2.0)])
+def test_schedule_rejects_bad_values(bad):
+    with pytest.raises(WarpFieldSpecError):
+        encode(step_field(), Config(S2, 0.25), schedule=bad)
+
+
+def test_huffman_roundtrip_and_errors():
+    rng = np.random.default_rng(3)
+    q = rng.geometric(0.4, 5000) * rng.choice([-1, 1], 5000) * (rng.random(5000) < 0.2)
+    q = np.concatenate([q, [5000, -100000, 1 << 40]]).astype(np.int64)
+    buf = huffman.encode(q)
+    np.testing.assert_array_equal(huffman.decode(buf, q.size), q)
+    np.testing.assert_array_equal(huffman.decode(huffman.encode(q[:0]), 0), q[:0])
+    with pytest.raises(fmt.WarpFieldFormatError):
+        huffman.decode(buf[:20], q.size)
+
+
+def _version_1(shape, codes, tight, verb, vals) -> bytes:
+    """A chunk in the version 1 layout (varint codes, no schedule)."""
+    import struct
+
+    import zstandard
+
+    c = zstandard.ZstdCompressor(level=3)
+    sections = [
+        c.compress(fmt.varint_encode(fmt.zigzag(codes))),
+        c.compress(fmt.pack_indices(tight)),
+        c.compress(fmt.pack_indices(verb)),
+        c.compress(vals.astype(vals.dtype.newbyteorder("<")).tobytes()),
+    ]
+    head = fmt.MAGIC + struct.pack("<BBH", 1, len(shape), 0)
+    head += struct.pack(f"<{len(shape)}Q", *shape)
+    head += struct.pack("<4I", *(len(x) for x in sections))
+    head += struct.pack("<3Q", codes.size, len(tight), len(verb))
+    return head + b"".join(sections)
+
+
+def test_reads_version_1():
+    u = step_field()
+    cfg = Config(S2, 0.25)
+    v2 = encode(u, cfg, schedule=(1.0, 1.0))
+    v1 = _version_1(*fmt.read_chunk(v2, u.dtype))
+    assert fmt.read_header(v1)[:2] == (1, 0)
+    np.testing.assert_array_equal(
+        decode(v1, u.shape, u.dtype, cfg), decode(v2, u.shape, u.dtype, cfg)
+    )
+    np.testing.assert_array_equal(
+        decode(v1, u.shape, u.dtype, cfg, backend="python"), decode(v2, u.shape, u.dtype, cfg)
+    )
 
 
 def test_roles_and_layouts():

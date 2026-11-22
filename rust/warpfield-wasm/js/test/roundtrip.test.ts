@@ -54,6 +54,20 @@ test("float64 round trip", () => {
   for (let i = 0; i < x.length; i++) assert.ok(Math.abs(x[i] - y[i]) <= 0.25);
 });
 
+test("a fixed level schedule re-encodes decoded values to themselves", () => {
+  const shape = [33, 20, 2];
+  const x = Float32Array.from(field(33, 20));
+  const once = wf.decode(wf.encode(x, shape, config, 3, [1.1, 1.5]), shape, "float32", config);
+  const twice = wf.decode(
+    wf.encode(once, shape, config, 3, [1.1, 1.5]),
+    shape,
+    "float32",
+    config,
+  );
+  assert.deepEqual(Array.from(twice), Array.from(once));
+  assert.throws(() => wf.encode(x, shape, config, 3, [0.5, 2]), WarpFieldError);
+});
+
 test("errors are reported, not thrown as traps", () => {
   const shape = [16, 16, 2];
   const buf = wf.encode(field(16, 16), shape, config);

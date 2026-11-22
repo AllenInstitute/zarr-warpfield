@@ -62,6 +62,8 @@ interface Exports {
     rank: number,
     dtype: number,
     zstdLevel: number,
+    alpha: number,
+    beta: number,
   ): number;
 }
 
@@ -166,12 +168,18 @@ export class WarpField {
     }
   }
 
-  /** Encode one chunk (C order). `zstdLevel` is ignored by the pure-Rust zstd in wasm. */
+  /**
+   * Encode one chunk (C order). `zstdLevel` is ignored by the pure-Rust zstd in wasm.
+   * `schedule` fixes the level schedule [alpha, beta] (both >= 1; the level with
+   * interpolation step 2^L is coded at error_bound / min(alpha^L, beta)); by default
+   * it is tuned per chunk.
+   */
   encode(
     data: Float32Array | Float64Array,
     shape: readonly number[],
     config: ConfigLike,
     zstdLevel = 3,
+    schedule?: readonly [number, number],
   ): Uint8Array {
     const n = shape.reduce((a, b) => a * b, 1);
     if (data.length !== n) {
@@ -194,6 +202,8 @@ export class WarpField {
         shape.length,
         data instanceof Float32Array ? 0 : 1,
         zstdLevel,
+        schedule ? schedule[0] : 0,
+        schedule ? schedule[1] : 0,
       );
       if (status !== 0) this.fail();
       const p = this.exports.wf_result_ptr();

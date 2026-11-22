@@ -24,7 +24,7 @@ Pipeline for one chunk:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -222,6 +222,18 @@ class _PassResult:
     verbatim: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
 
+def level_eps(base: np.ndarray, h: int, schedule: tuple[float, float]) -> np.ndarray:
+    """Level schedule (QoZ / HPEZ): the level with interpolation step h = 2^L
+    is coded at eps / min(alpha^L, beta). alpha^L by repeated multiplication,
+    as in the Rust crate, so both give the same bits."""
+    alpha, beta = schedule
+    f, s = 1.0, 1
+    while s < h:
+        f *= alpha
+        s *= 2
+    return base / min(f, beta)
+
+
 def _run_pass(
     cfg: Config,
     cls: np.ndarray,
@@ -229,6 +241,7 @@ def _run_pass(
     x: np.ndarray | None = None,
     codes: np.ndarray | None = None,
     recon_init: np.ndarray | None = None,
+    schedule: tuple[float, float] = (1.0, 1.0),
 ) -> _PassResult:
     """Encode (x given) or decode (codes given) one canonical chunk.
 
@@ -237,7 +250,8 @@ def _run_pass(
     """
     encoding = x is not None
     shape = cls.shape
-    eps = cfg.eps_table()
+    eps_base = cfg.eps_table()
+    eps = eps_base
     R = np.zeros(shape, dtype=np.float64) if recon_init is None else recon_init
     out_codes: list[np.ndarray] = []
     new_verb: list[np.ndarray] = []
@@ -283,11 +297,13 @@ def _run_pass(
     # anchors: the chunk corners (or the coarsest lattice), predicted as zero
     S = top_stride(pshape)
     lists = [known(S, n, boundary) for n in pshape]
+    eps = level_eps(eps_base, S, schedule)
     block(lists, np.zeros((shape[0], *(len(a) for a in lists))))
 
     h = S // 2
     while h >= 1:
         tau = cfg.error_bound / float(h * h)
+        eps = level_eps(eps_base, h, schedule)
         for j, n in enumerate(pshape):
             tg = new_points(h, n, boundary)
             if tg.size == 0:
@@ -344,11 +360,24 @@ def _config_json(cfg: Config) -> str:
     return json.dumps(cfg.to_dict())
 
 
-def encode(arr: np.ndarray, cfg: Config, *, stats: bool = False, backend: str | None = None):
+def encode(
+    arr: np.ndarray,
+    cfg: Config,
+    *,
+    stats: bool = False,
+    backend: str | None = None,
+    schedule: tuple[float, float] | None = None,
+):
     """Encode one chunk. Returns bytes, or (bytes, EncodeStats, classes) if `stats`.
 
     `backend` is "rust", "python" or "auto"/None (Rust when installed); see `_backend`.
+    `schedule` is the level schedule (alpha, beta), both >= 1; None tunes it per
+    chunk (`tune`), (1, 1) is the uniform schedule of format version 1.
     """
+    if schedule is not None:
+        schedule = (float(schedule[0]), float(schedule[1]))
+        if not all(np.isfinite(v) and v >= 1 for v in schedule):
+            raise WarpFieldSpecError("schedule alpha and beta must be finite and >= 1")
     arr = np.asarray(arr)
     dtype = arr.dtype
     if dtype not in (np.dtype(np.float32), np.dtype(np.float64)):
@@ -362,20 +391,20 @@ def encode(arr: np.ndarray, cfg: Config, *, stats: bool = False, backend: str | 
             )
         try:
             buf, cls, n_codes, n_tight, n_verb, rounds = _backend.rs.encode(
-                np.ascontiguousarray(arr), _config_json(cfg), classes=stats
+                np.ascontiguousarray(arr), _config_json(cfg), classes=stats, schedule=schedule
             )
         except _backend.rs.SpecError as e:
             raise WarpFieldSpecError(str(e)) from None
         if not stats:
             return buf
         return buf, EncodeStats(arr.size, n_codes, n_tight, n_verb, rounds, len(buf)), cls
-    return _encode_py(arr, cfg, stats=stats)
+    return _encode_py(arr, cfg, stats=stats, schedule=schedule)
 
 
-def _encode_py(arr: np.ndarray, cfg: Config, *, stats: bool = False):
-    dtype = arr.dtype
-    lay = layout(cfg.axis_roles, arr.shape)
-    x = to_canonical(arr, lay).astype(np.float64)
+def _code_canonical(cfg: Config, lay: Layout, x: np.ndarray, dtype, schedule):
+    """The closed loop on one canonical array: code it with `schedule`, then,
+    with a Jacobian constraint, tighten or store verbatim the samples of
+    violating cells until none are left. Returns (classes, pass result, rounds)."""
     base = face_classes(lay)
     eps = cfg.eps_table()
     forced_tight = np.zeros(base.shape, dtype=bool)
@@ -387,12 +416,12 @@ def _encode_py(arr: np.ndarray, cfg: Config, *, stats: bool = False):
         cls = base.copy()
         cls[forced_tight] = TIGHT
         cls[forced_verb] = VERBATIM
-        res = _run_pass(cfg, cls, dtype, x=x)
+        res = _run_pass(cfg, cls, dtype, x=x, schedule=schedule)
         if j is None:
-            break
+            return cls, res, rounds
         bad_cells = jac.violations(d0, _det(res.recon, lay, j), j.min_det)
         if not bad_cells.any():
-            break
+            return cls, res, rounds
         rounds += 1
         hit = _cells_to_samples(bad_cells, lay) & ~forced_verb
         if not hit.any():  # cannot happen: verbatim cells reproduce d0 exactly
@@ -403,10 +432,65 @@ def _encode_py(arr: np.ndarray, cfg: Config, *, stats: bool = False):
         forced_verb |= hit & ~can_tighten
         forced_tight |= can_tighten
 
+
+# Per-chunk level schedule, after QoZ / HPEZ: code the central TUNE_SAMPLE^d
+# sub-block with each candidate and keep the cheapest. Same candidates, cost and
+# tie-break as the Rust crate (`tune.rs`), so both pick the same schedule.
+TUNE_CANDIDATES = (
+    (1.0, 1.0),
+    (1.1, 1.5),
+    (1.1, 3.0),
+    (1.25, 2.0),
+    (1.5, 2.0),
+    (1.5, 3.0),
+    (2.0, 4.0),
+)
+TUNE_SAMPLE = 65
+
+
+def tune_cost(codes: np.ndarray, n_verbatim: int) -> int:
+    """Σ over nonzero codes of 1 + bit length of zigzag(q), plus 64 per verbatim sample."""
+    z = fmt.zigzag(codes[codes != 0])
+    bitlen = np.zeros(z.size, dtype=np.int64)
+    for b in range(64):
+        bitlen += z >= (np.uint64(1) << np.uint64(b))
+    return int(64 * n_verbatim + z.size + bitlen.sum())
+
+
+def tune(cfg: Config, lay: Layout, x: np.ndarray, dtype) -> tuple[float, float]:
+    sl = [slice(None)]
+    sub = []
+    for n in lay.pred_shape:
+        if n > TUNE_SAMPLE:
+            s0 = (n - TUNE_SAMPLE) // 2
+            sl.append(slice(s0, s0 + TUNE_SAMPLE))
+            sub.append(TUNE_SAMPLE)
+        else:
+            sl.append(slice(None))
+            sub.append(n)
+    xs = np.ascontiguousarray(x[tuple(sl)])
+    sublay = replace(lay, pred_shape=tuple(sub))
+    best = None
+    for cand in TUNE_CANDIDATES:
+        cls, res, _ = _code_canonical(cfg, sublay, xs, dtype, cand)
+        c = tune_cost(res.codes, int((cls == VERBATIM).sum()))
+        if best is None or c < best[0]:
+            best = (c, cand)
+    return best[1]
+
+
+def _encode_py(arr: np.ndarray, cfg: Config, *, stats: bool = False, schedule=None):
+    dtype = arr.dtype
+    lay = layout(cfg.axis_roles, arr.shape)
+    x = to_canonical(arr, lay).astype(np.float64)
+    if schedule is None:
+        schedule = tune(cfg, lay, x, dtype)
+    cls, res, rounds = _code_canonical(cfg, lay, x, dtype, tuple(schedule))
+
     verb = np.flatnonzero(cls.ravel() == VERBATIM)
     tight = np.flatnonzero(cls.ravel() == TIGHT)
     vals = x.ravel()[verb].astype(dtype)
-    buf = fmt.write_chunk(lay.canonical_shape, res.codes, tight, verb, vals)
+    buf = fmt.write_chunk(lay.canonical_shape, res.codes, tight, verb, vals, schedule)
     if not stats:
         return buf
     st = EncodeStats(arr.size, res.codes.size, tight.size, verb.size, rounds, len(buf))
@@ -434,6 +518,7 @@ def _decode_py(buf: bytes, shape: tuple[int, ...], dtype: Any, cfg: Config) -> n
     dtype = np.dtype(dtype)
     lay = layout(cfg.axis_roles, tuple(shape))
     cshape, codes, tight, verb, vals = fmt.read_chunk(bytes(buf), dtype)
+    schedule = fmt.read_header(bytes(buf))[3]
     if cshape != lay.canonical_shape:
         raise fmt.WarpFieldFormatError(
             f"chunk was encoded with canonical shape {cshape}, expected {lay.canonical_shape}"
@@ -443,7 +528,7 @@ def _decode_py(buf: bytes, shape: tuple[int, ...], dtype: Any, cfg: Config) -> n
     cls.flat[verb] = VERBATIM
     R = np.zeros(cls.shape, dtype=np.float64)
     R.flat[verb] = vals.astype(np.float64)
-    res = _run_pass(cfg, cls, dtype, codes=codes, recon_init=R)
+    res = _run_pass(cfg, cls, dtype, codes=codes, recon_init=R, schedule=schedule)
     return from_canonical(res.recon, lay).astype(dtype)
 
 

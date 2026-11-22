@@ -16,7 +16,7 @@ use jni::objects::{
     JByteArray, JByteBuffer, JClass, JDoubleArray, JFloatArray, JIntArray, JPrimitiveArray,
     JString, ReleaseMode, TypeArray,
 };
-use jni::sys::{jbyteArray, jint, jstring};
+use jni::sys::{jbyteArray, jdouble, jint, jstring};
 use warpfield::{Config, Element, EncodeOptions};
 
 const EXCEPTION: &str = "org/warpfield/WarpfieldException";
@@ -123,6 +123,7 @@ fn decode_array<T: Element + TypeArray>(
         .map_err(|e| e.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_array<'local, T: Element + TypeArray>(
     env: &mut JNIEnv<'local>,
     cfg: &JString,
@@ -130,6 +131,8 @@ fn encode_array<'local, T: Element + TypeArray>(
     off: jint,
     shp: &JIntArray,
     zstd_level: jint,
+    alpha: f64,
+    beta: f64,
 ) -> Res<JByteArray<'local>> {
     let cfg = config(env, cfg)?;
     let (shape, n) = shape(env, shp)?;
@@ -138,6 +141,8 @@ fn encode_array<'local, T: Element + TypeArray>(
     let opts = EncodeOptions {
         zstd_level,
         classes: false,
+        // (0, 0) asks the encoder to tune the level schedule per chunk
+        schedule: (alpha != 0.0 || beta != 0.0).then_some(warpfield::Schedule { alpha, beta }),
     };
     // Encoding takes far longer than decoding (zstd level 19), so copy the
     // input out rather than hold a critical region (which can stall the GC).
@@ -263,9 +268,11 @@ pub extern "system" fn Java_org_warpfield_Warpfield_nEncodeFloat32<'l>(
     off: jint,
     shape: JIntArray<'l>,
     zstd_level: jint,
+    alpha: jdouble,
+    beta: jdouble,
 ) -> jbyteArray {
     guard(&mut env, std::ptr::null_mut(), |env| {
-        Ok(encode_array::<f32>(env, &cfg, &data, off, &shape, zstd_level)?.into_raw())
+        Ok(encode_array::<f32>(env, &cfg, &data, off, &shape, zstd_level, alpha, beta)?.into_raw())
     })
 }
 
@@ -278,8 +285,10 @@ pub extern "system" fn Java_org_warpfield_Warpfield_nEncodeFloat64<'l>(
     off: jint,
     shape: JIntArray<'l>,
     zstd_level: jint,
+    alpha: jdouble,
+    beta: jdouble,
 ) -> jbyteArray {
     guard(&mut env, std::ptr::null_mut(), |env| {
-        Ok(encode_array::<f64>(env, &cfg, &data, off, &shape, zstd_level)?.into_raw())
+        Ok(encode_array::<f64>(env, &cfg, &data, off, &shape, zstd_level, alpha, beta)?.into_raw())
     })
 }

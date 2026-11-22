@@ -20,7 +20,11 @@ def configs(p):
 def case(request):
     p = synth.preset(request.param, "small")
     u, lab = p.full()
-    out = {k: chunked.roundtrip(u, p.chunks, c) for k, c in configs(p).items()}
+    # the baseline is a naive chunked SZ-style coder: uniform bounds everywhere
+    sched = {"warpfield": None, "baseline": (1.0, 1.0)}
+    out = {
+        k: chunked.roundtrip(u, p.chunks, c, schedule=sched[k]) for k, c in configs(p).items()
+    }
     return p, u, lab, out
 
 

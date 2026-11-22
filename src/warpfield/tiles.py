@@ -99,8 +99,12 @@ def encode_tiles(
     skip_fill: bool = False,
     workers: int = 1,
     backend: str | None = None,
+    schedule: tuple[float, float] | None = None,
 ) -> MutableMapping[Hashable, bytes]:
     """Encode `source` tile by tile into `out` (a new dict by default).
+
+    `schedule` fixes the level schedule (alpha, beta) for every tile; None
+    tunes it per tile (see `warpfield.encode`).
 
     `key` maps a tile index to the key stored in `out` (the index itself by
     default; `zarr_chunk_key` for zarr's layout). With `skip_fill`, tiles that
@@ -120,7 +124,7 @@ def encode_tiles(
         tile = _padded(block, tile_shape, fill_value)
         if skip_fill and np.array_equal(tile, np.full_like(tile, fill_value), equal_nan=True):
             return index, None
-        return index, encode(tile, cfg, backend=backend)
+        return index, encode(tile, cfg, backend=backend, schedule=schedule)
 
     def store(result: tuple[TileIndex, bytes | None]) -> None:
         index, buf = result

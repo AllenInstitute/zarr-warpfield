@@ -9,7 +9,10 @@ then times, with the Rust backend:
 - an end-to-end parallel encode of the whole field with `warpfield.tiles`,
   including reading the zstd source.
 
-    uv run python codec_timing.py OUT [--threads 14]
+    uv run python codec_timing.py OUT [--threads 14] [--schedule ALPHA BETA]
+
+With --schedule every chunk uses that level schedule instead of tuning one
+(results go to OUT/codec_timing_schedule-ALPHA-BETA.json).
 
 OUT is verify.py's output directory (with <field>_zstd19-lossless.zarr and
 <field>_warpfield-eps*.zarr). Results go to OUT/codec_timing.json.
@@ -38,9 +41,17 @@ def main() -> None:
     ap.add_argument("out", type=Path)
     ap.add_argument("--threads", type=int, default=os.cpu_count())
     ap.add_argument("--fields", nargs="+", default=["forward", "inverse"])
+    ap.add_argument(
+        "--schedule",
+        nargs=2,
+        type=float,
+        metavar=("ALPHA", "BETA"),
+        help="fixed level schedule instead of per-chunk tuning",
+    )
     a = ap.parse_args()
+    sched = tuple(a.schedule) if a.schedule else None
 
-    results = {"threads": a.threads, "backend": "rust", "fields": {}}
+    results = {"threads": a.threads, "backend": "rust", "schedule": sched, "fields": {}}
     for field in a.fields:
         src = zarr.open_array(a.out / f"{field}_zstd19-lossless.zarr", mode="r")
         shape, tile = src.shape, src.chunks
@@ -64,7 +75,7 @@ def main() -> None:
             n_chunks += 1
             for e, cfg in cfgs.items():
                 t0 = time.perf_counter()
-                buf = core.encode(chunk, cfg, backend="rust")
+                buf = core.encode(chunk, cfg, backend="rust", schedule=sched)
                 enc_s[e] += time.perf_counter() - t0
                 t0 = time.perf_counter()
                 core.decode(buf, tile, chunk.dtype, cfg, backend="rust")
@@ -94,7 +105,7 @@ def main() -> None:
                 )
                 dec_par = time.perf_counter() - t0
             t0 = time.perf_counter()
-            encode_tiles(src, tile, cfg, workers=a.threads, backend="rust")
+            encode_tiles(src, tile, cfg, workers=a.threads, backend="rust", schedule=sched)
             enc_par = time.perf_counter() - t0
             size = sum(len(b) for b in encoded[e])
             r["eps"][e] = {
@@ -118,7 +129,12 @@ def main() -> None:
                 flush=True,
             )
         results["fields"][field] = r
-    (a.out / "codec_timing.json").write_text(json.dumps(results, indent=1))
+    name = (
+        "codec_timing.json"
+        if sched is None
+        else "codec_timing_schedule-{:g}-{:g}.json".format(*sched)
+    )
+    (a.out / name).write_text(json.dumps(results, indent=1))
 
 
 if __name__ == "__main__":

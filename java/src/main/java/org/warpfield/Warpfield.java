@@ -154,19 +154,49 @@ public final class Warpfield {
 
   /**
    * Encode the chunk at {@code data[offset ...]}. Lower zstd levels encode faster and give
-   * slightly larger output; decoded values do not change.
+   * slightly larger output; decoded values do not change. The level schedule is tuned per
+   * chunk.
    */
   public static byte[] encode(
       float[] data, int offset, int[] shape, String config, int zstdLevel) {
-    check(data, shape, config, data);
-    return nEncodeFloat32(config, data, offset, shape, zstdLevel);
+    return encode(data, offset, shape, config, zstdLevel, 0, 0);
   }
 
   /** As {@link #encode(float[], int, int[], String, int)}, for float64. */
   public static byte[] encode(
       double[] data, int offset, int[] shape, String config, int zstdLevel) {
+    return encode(data, offset, shape, config, zstdLevel, 0, 0);
+  }
+
+  /**
+   * Encode with a fixed level schedule: the level with interpolation step 2^L is coded at
+   * {@code error_bound / min(alpha^L, beta)}. Both must be at least 1; {@code (1, 1)} is
+   * uniform, and {@code (0, 0)} tunes the schedule per chunk (the default). With a fixed
+   * schedule, decoded values re-encode to themselves.
+   */
+  public static byte[] encode(
+      float[] data,
+      int offset,
+      int[] shape,
+      String config,
+      int zstdLevel,
+      double alpha,
+      double beta) {
     check(data, shape, config, data);
-    return nEncodeFloat64(config, data, offset, shape, zstdLevel);
+    return nEncodeFloat32(config, data, offset, shape, zstdLevel, alpha, beta);
+  }
+
+  /** As {@link #encode(float[], int, int[], String, int, double, double)}, for float64. */
+  public static byte[] encode(
+      double[] data,
+      int offset,
+      int[] shape,
+      String config,
+      int zstdLevel,
+      double alpha,
+      double beta) {
+    check(data, shape, config, data);
+    return nEncodeFloat64(config, data, offset, shape, zstdLevel, alpha, beta);
   }
 
   private static void check(Object src, int[] shape, String config, Object dst) {
@@ -208,8 +238,20 @@ public final class Warpfield {
       int dstPosition);
 
   private static native byte[] nEncodeFloat32(
-      String config, float[] data, int offset, int[] shape, int zstdLevel);
+      String config,
+      float[] data,
+      int offset,
+      int[] shape,
+      int zstdLevel,
+      double alpha,
+      double beta);
 
   private static native byte[] nEncodeFloat64(
-      String config, double[] data, int offset, int[] shape, int zstdLevel);
+      String config,
+      double[] data,
+      int offset,
+      int[] shape,
+      int zstdLevel,
+      double alpha,
+      double beta);
 }

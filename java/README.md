@@ -54,7 +54,10 @@ Apple M-series, 14 cores:
 
 Encoding copies its input once (it can take long enough at zstd level 19 that
 holding a critical region would stall the garbage collector). Pass a lower zstd
-level to `encode` for faster encoding; decoded values do not change.
+level to `encode` for faster encoding; decoded values do not change. The
+level schedule is tuned per chunk; `encode(data, offset, shape, config,
+zstdLevel, alpha, beta)` fixes it instead (both ≥ 1; `(1, 1)` is uniform), which
+also makes decode → encode → decode a fixed point.
 
 ## Build
 

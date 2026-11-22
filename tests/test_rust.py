@@ -18,6 +18,8 @@ def check_same(arr: np.ndarray, cfg: Config) -> None:
     rb, rst, rcls = core.encode(arr, cfg, stats=True, backend="rust")
     a, b = fmt.read_chunk(pb, arr.dtype), fmt.read_chunk(rb, arr.dtype)
     assert a[0] == b[0]
+    # same level schedule chosen (tuning is deterministic)
+    assert fmt.read_header(pb)[3] == fmt.read_header(rb)[3]
     for x, y in zip(a[1:], b[1:], strict=True):
         np.testing.assert_array_equal(
             _bits(x) if x.dtype.kind == "f" else x, _bits(y) if y.dtype.kind == "f" else y

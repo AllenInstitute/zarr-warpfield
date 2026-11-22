@@ -39,7 +39,13 @@ def chunk_slices(shape: tuple[int, ...], chunks: tuple[int, ...]):
         )
 
 
-def roundtrip(arr: np.ndarray, chunks: tuple[int, ...], cfg: Config, fill_value: float = 0.0):
+def roundtrip(
+    arr: np.ndarray,
+    chunks: tuple[int, ...],
+    cfg: Config,
+    fill_value: float = 0.0,
+    schedule: tuple[float, float] | None = None,
+):
     out = np.empty_like(arr)
     cls = np.empty(arr.shape, dtype=np.uint8)
     total = 0
@@ -51,7 +57,7 @@ def roundtrip(arr: np.ndarray, chunks: tuple[int, ...], cfg: Config, fill_value:
         inner = tuple(slice(0, s.stop - s.start) for s in sl)
         block[inner] = arr[sl]
         t0 = time.perf_counter()
-        buf, st, c = encode(block, cfg, stats=True)
+        buf, st, c = encode(block, cfg, stats=True, schedule=schedule)
         t1 = time.perf_counter()
         dec = decode(buf, chunks, arr.dtype, cfg)
         te += t1 - t0

@@ -60,23 +60,25 @@ fn encode_typed<'py, T: Element + numpy::Element>(
     ))
 }
 
-/// encode(arr, config_json, *, classes=False, zstd_level=19)
+/// encode(arr, config_json, *, classes=False, zstd_level=19, schedule=None)
 ///     -> (bytes, classes | None, n_codes, n_tight, n_verbatim, jacobian_rounds)
 ///
 /// `arr` is a C-contiguous float32 or float64 numpy array holding one chunk.
 #[pyfunction]
-#[pyo3(signature = (arr, config, *, classes = false, zstd_level = warpfield::DEFAULT_ZSTD_LEVEL))]
+#[pyo3(signature = (arr, config, *, classes = false, zstd_level = warpfield::DEFAULT_ZSTD_LEVEL, schedule = None))]
 fn encode<'py>(
     py: Python<'py>,
     arr: &Bound<'py, PyAny>,
     config: &str,
     classes: bool,
     zstd_level: i32,
+    schedule: Option<(f64, f64)>,
 ) -> PyResult<EncodeResult<'py>> {
     let cfg = self::config(config)?;
     let opts = EncodeOptions {
         zstd_level,
         classes,
+        schedule: schedule.map(|(alpha, beta)| warpfield::Schedule { alpha, beta }),
     };
     if let Ok(a) = arr.extract::<PyReadonlyArrayDyn<'py, f32>>() {
         encode_typed(py, a, &cfg, &opts)

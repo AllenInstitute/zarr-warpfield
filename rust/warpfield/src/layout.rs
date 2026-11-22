@@ -123,25 +123,30 @@ impl Layout {
     /// Class map with chunk-face samples (index 0 or N-1 on any predicted axis
     /// of extent >= 2) set to FACE.
     pub fn face_classes(&self) -> Vec<u8> {
-        let cs = self.canonical_shape();
-        let n: usize = cs.iter().product();
-        let mut cls = vec![0u8; n];
-        let strides = c_strides(&cs);
-        for (j, &nj) in self.pred_shape.iter().enumerate() {
-            if nj < 2 {
-                continue;
-            }
-            let ax = j + 1;
-            let st = strides[ax];
-            let outer: usize = cs[..ax].iter().product();
-            let block = st * cs[ax];
-            for o in 0..outer {
-                for end in [0, nj - 1] {
-                    let base = o * block + end * st;
-                    cls[base..base + st].fill(FACE);
-                }
+        face_classes(&self.canonical_shape())
+    }
+}
+
+/// FACE on the first and last index of every predicted axis (extent >= 2) of a
+/// canonical array (batch axis first), INTERIOR elsewhere.
+pub(crate) fn face_classes(cs: &[usize]) -> Vec<u8> {
+    let n: usize = cs.iter().product();
+    let mut cls = vec![0u8; n];
+    let strides = c_strides(cs);
+    for ax in 1..cs.len() {
+        let nj = cs[ax];
+        if nj < 2 {
+            continue;
+        }
+        let st = strides[ax];
+        let outer: usize = cs[..ax].iter().product();
+        let block = st * nj;
+        for o in 0..outer {
+            for end in [0, nj - 1] {
+                let base = o * block + end * st;
+                cls[base..base + st].fill(FACE);
             }
         }
-        cls
     }
+    cls
 }

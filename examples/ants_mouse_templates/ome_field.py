@@ -49,7 +49,6 @@ from pathlib import Path
 
 import numpy as np
 import zarr
-from streaming import NiftiField
 
 from zarr_warpfield import WarpFieldCodec
 
@@ -58,13 +57,23 @@ LPS_TO_OUT = np.array([[0, 0, 1], [0, -1, 0], [-1, 0, 0]], float)
 BLOCK = 16
 
 
-def ome(name, intrinsic_axes, levels, index_to_output_mm, spacing, channel, space_name):
+def ome(
+    name,
+    intrinsic_axes,
+    levels,
+    index_to_output_mm,
+    spacing,
+    channel,
+    space_name,
+    unit="millimeter",
+    output_axes=("z", "y", "x"),
+):
     """OME-Zarr 0.6 multiscale; levels: [(path, factor)], factor 2**L per spatial axis.
 
     Level L sample n sits at the center of the 2**L level-0 samples it averages.
     """
-    sp = [{"name": a, "type": "space", "unit": "millimeter"} for a in intrinsic_axes]
-    out = [{"name": a, "type": "space", "unit": "millimeter"} for a in ("z", "y", "x")]
+    sp = [{"name": a, "type": "space", "unit": unit} for a in intrinsic_axes]
+    out = [{"name": a, "type": "space", "unit": unit} for a in output_axes]
     # intrinsic (mm along the array axes) -> output: linear part / spacing
     lin = index_to_output_mm[:, :3] / np.asarray(spacing)[None, :]
     aff = np.zeros((3, 4))
@@ -175,13 +184,58 @@ def write(
     jacobian_image=False,
     min_level_extent=16,
 ):
+    """An ANTs displacement field (NIfTI) as a field store."""
+    from streaming import NiftiField  # needs nibabel; only this path does
+
     src = NiftiField(nifti)
-    Nk, Nj, Ni = src.grid.shape
-    spacing = [float(s) for s in np.linalg.norm(src.grid.M, axis=0)]
     idx_to_out = np.zeros((3, 4))
     idx_to_out[:, :3] = LPS_TO_OUT @ src.grid.M
     idx_to_out[:, 3] = LPS_TO_OUT @ src.grid.t
-    vec_to_out = LPS_TO_OUT @ src.R
+    return write_field_store(
+        out,
+        src.grid.shape,
+        src.read,
+        idx_to_out,
+        LPS_TO_OUT @ src.R,
+        error_bound,
+        chunks=chunks,
+        min_det=min_det,
+        space=space,
+        jacobian_image=jacobian_image,
+        min_level_extent=min_level_extent,
+        source=nifti.name,
+    )
+
+
+def write_field_store(
+    out: Path,
+    shape,
+    read_slab,
+    idx_to_out,
+    vec_to_out,
+    error_bound: float,
+    chunks=64,
+    min_det=0.1,
+    space="mm RAS",
+    unit="millimeter",
+    output_axes=("z", "y", "x"),
+    jacobian_image=False,
+    min_level_extent=16,
+    source=None,
+    extra_attributes=None,
+):
+    """Write a displacement field store (layout in the module docstring).
+
+    shape: (Nk, Nj, Ni) samples. read_slab(k0, k1) -> (k1 - k0, Nj, Ni, 3)
+    displacement components, index-aligned (component c along array axis c).
+    idx_to_out: 3x4, array index (sample n at n) -> output coordinates, whose
+    axes are `output_axes` in `unit`; vec_to_out: 3x3, components -> output
+    (equal to idx_to_out's linear part divided by the spacing).
+    """
+    Nk, Nj, Ni = (int(n) for n in shape)
+    idx_to_out = np.asarray(idx_to_out, float)
+    vec_to_out = np.asarray(vec_to_out, float)
+    spacing = [float(s) for s in np.linalg.norm(idx_to_out[:, :3], axis=0)]
 
     root = zarr.open_group(out, mode="w", zarr_format=3)
     codec = WarpFieldCodec(
@@ -200,7 +254,7 @@ def write(
         dimension_names=["c", "k", "j", "i"],
     )
     for k0 in range(0, Nk, chunks):
-        slab = src.read(k0, min(k0 + chunks, Nk))  # (k, j, i, 3)
+        slab = read_slab(k0, min(k0 + chunks, Nk))  # (k, j, i, 3)
         field[:, k0 : k0 + slab.shape[0]] = np.moveaxis(slab, -1, 0)
 
     nb = [-(-n // BLOCK) for n in (Nk, Nj, Ni)]
@@ -312,7 +366,17 @@ def write(
 
     for meta, err in zip(scales_meta, level_errors(root), strict=True):
         meta["interpolation_error"] = err
-    root.attrs["ome"] = ome(out.name, ["k", "j", "i"], levels, idx_to_out, spacing, True, space)
+    root.attrs["ome"] = ome(
+        out.name,
+        ["k", "j", "i"],
+        levels,
+        idx_to_out,
+        spacing,
+        True,
+        space,
+        unit,
+        output_axes,
+    )
     # RFC-5: the vectors are expressed in the displacements transformation's
     # coordinate system, here "intrinsic", whose affine to the output is idx_to_out
     # divided by the spacing.
@@ -328,11 +392,20 @@ def write(
         "bounds": {"path": "bounds", "block_shape": [BLOCK] * 3},
         "extrapolation": "nearest",
         "det_jacobian_min": det_min,
-        "source": nifti.name,
+        "source": source,
+        **(extra_attributes or {}),
     }
     if jac is not None:
         jac.attrs["ome"] = ome(
-            out.name + " det J", ["k", "j", "i"], [("s0", 1)], idx_to_out, spacing, False, space
+            out.name + " det J",
+            ["k", "j", "i"],
+            [("s0", 1)],
+            idx_to_out,
+            spacing,
+            False,
+            space,
+            unit,
+            output_axes,
         )
     return det_min
 

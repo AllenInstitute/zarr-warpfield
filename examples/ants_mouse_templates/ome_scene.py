@@ -35,7 +35,11 @@ from pathlib import Path
 
 import numpy as np
 
-SPACE_AXES = [{"name": a, "type": "space", "unit": "millimeter"} for a in ("z", "y", "x")]
+def space_axes(unit: str = "millimeter") -> list[dict]:
+    return [{"name": a, "type": "space", "unit": unit} for a in ("z", "y", "x")]
+
+
+SPACE_AXES = space_axes()
 
 
 def field_affine(field: Path) -> np.ndarray:
@@ -122,7 +126,16 @@ def displacements(field_path: str, affine: np.ndarray) -> dict:
     }
 
 
-def write(scene: Path, forward: Path, inverse: Path, input_space: str, output_space: str):
+def write(
+    scene: Path,
+    forward: Path,
+    inverse: Path,
+    input_space: str,
+    output_space: str,
+    unit: str = "millimeter",
+):
+    """Both fields and the bijection between the two spaces, whose axes are in `unit`
+    (the unit of the fields' own coordinate systems)."""
     if scene.exists():
         shutil.rmtree(scene)
     paths = {}
@@ -142,8 +155,8 @@ def write(scene: Path, forward: Path, inverse: Path, input_space: str, output_sp
                 "version": "0.6",
                 "scene": {
                     "coordinateSystems": [
-                        {"name": input_space, "axes": SPACE_AXES},
-                        {"name": output_space, "axes": SPACE_AXES},
+                        {"name": input_space, "axes": space_axes(unit)},
+                        {"name": output_space, "axes": space_axes(unit)},
                     ],
                     "coordinateTransformations": [
                         {

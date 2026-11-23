@@ -84,7 +84,9 @@ pub struct JacobianConfig {
     /// Image units per field sample along each spatial axis, in axis order.
     pub grid_spacing: Vec<f64>,
     pub min_det: f64,
-    pub tight_error_bound: Option<f64>,
+    /// Tight tiers' bounds, loosest first (`tight_error_bound`: a number or a
+    /// list). Empty means one tier at `error_bound / 8`.
+    pub tight_error_bounds: Vec<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +103,20 @@ pub const INTERIOR: u8 = 0;
 pub const FACE: u8 = 1;
 pub const TIGHT: u8 = 2;
 pub const VERBATIM: u8 = 3;
+/// Most tight tiers a configuration may have.
+pub const MAX_TIERS: usize = 4;
+/// Size of the class table: interior, face, tight, verbatim, tiers 1.. .
+pub const N_CLASSES: usize = 3 + MAX_TIERS;
+
+/// Class of tight tier `t` (0 is TIGHT; later tiers follow VERBATIM).
+pub fn tight_class(t: usize) -> u8 {
+    if t == 0 { TIGHT } else { VERBATIM + t as u8 }
+}
+
+/// Whether class `c` is a tight tier.
+pub fn is_tight(c: u8) -> bool {
+    c == TIGHT || c > VERBATIM
+}
 
 impl Config {
     /// Defaults: ENO predictor, clamped boundary, faces at `error_bound / 4`, no Jacobian.
@@ -119,19 +135,28 @@ impl Config {
         self.face_error_bound.unwrap_or(self.error_bound / 4.0)
     }
 
-    pub fn eps_tight(&self) -> f64 {
+    /// The tight tiers' bounds, loosest first.
+    pub fn tight_bounds(&self) -> Vec<f64> {
         match &self.jacobian {
-            Some(JacobianConfig {
-                tight_error_bound: Some(t),
-                ..
-            }) => *t,
-            _ => self.error_bound / 8.0,
+            Some(j) if !j.tight_error_bounds.is_empty() => j.tight_error_bounds.clone(),
+            _ => vec![self.error_bound / 8.0],
         }
     }
 
-    /// Absolute error bound per class: interior, face, tight, verbatim.
-    pub fn eps_table(&self) -> [f64; 4] {
-        [self.error_bound, self.eps_face(), self.eps_tight(), 0.0]
+    pub fn eps_tight(&self) -> f64 {
+        self.tight_bounds()[0]
+    }
+
+    /// Absolute error bound per class: interior, face, tight, verbatim, then
+    /// tight tiers 1.. (zero past the configured tiers).
+    pub fn eps_table(&self) -> [f64; N_CLASSES] {
+        let mut t = [0.0; N_CLASSES];
+        t[0] = self.error_bound;
+        t[1] = self.eps_face();
+        for (i, &b) in self.tight_bounds().iter().enumerate() {
+            t[tight_class(i) as usize] = b;
+        }
+        t
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -168,10 +193,14 @@ impl Config {
             if j.grid_spacing.iter().any(|s| !(*s > 0.0)) {
                 return spec("jacobian.grid_spacing entries must be positive");
             }
-            if let Some(t) = j.tight_error_bound
-                && !(t > 0.0 && t <= self.error_bound)
-            {
+            let t = &j.tight_error_bounds;
+            if t.iter().any(|&v| !(v > 0.0 && v <= self.error_bound)) {
                 return spec("tight_error_bound must be in (0, error_bound]");
+            }
+            if t.len() > MAX_TIERS || t.windows(2).any(|w| w[0] <= w[1]) {
+                return spec(format!(
+                    "a tight_error_bound ladder needs 1 to {MAX_TIERS} strictly decreasing bounds"
+                ));
             }
         }
         Ok(())
@@ -240,7 +269,7 @@ impl Config {
                     let mut j = JacobianConfig {
                         grid_spacing: Vec::new(),
                         min_det: 0.0,
-                        tight_error_bound: None,
+                        tight_error_bounds: Vec::new(),
                     };
                     let mut have_gs = false;
                     for (jk, jv) in o.iter() {
@@ -257,10 +286,19 @@ impl Config {
                             }
                             "min_det" => j.min_det = num(jv, jk)?,
                             "tight_error_bound" => {
-                                j.tight_error_bound = if jv.is_null() {
-                                    None
+                                j.tight_error_bounds = if jv.is_null() {
+                                    Vec::new()
+                                } else if let Some(a) = jv.as_array() {
+                                    if a.is_empty() {
+                                        return spec(
+                                            "a tight_error_bound ladder needs 1 to 4 strictly decreasing bounds",
+                                        );
+                                    }
+                                    a.iter()
+                                        .map(|x| num(x, "tight_error_bound entry"))
+                                        .collect::<Result<_>>()?
                                 } else {
-                                    Some(num(jv, jk)?)
+                                    vec![num(jv, jk)?]
                                 }
                             }
                             _ => return spec(format!("unknown jacobian key {jk:?}")),

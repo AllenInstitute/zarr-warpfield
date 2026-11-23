@@ -188,6 +188,41 @@ def test_jacobian_promotes_samples():
     assert (cls >= 2).any()
 
 
+def test_tight_ladder_promotes_through_tiers():
+    from warpfield.jacobian import det_jacobian, violations
+
+    # a ramp to det J ~ 0.13, just above min_det: the first tier is not
+    # enough at its corners, so one tier needs verbatim samples
+    rng = np.random.default_rng(3)
+    y, x = np.mgrid[0:64, 0:64].astype(np.float64)
+    ux = -0.87 * np.clip(x - 31, 0, 1) + 0.05 * rng.standard_normal(x.shape)
+    u = np.stack([0.05 * rng.standard_normal(x.shape), ux], -1).astype(np.float32)
+    d0 = det_jacobian(u, 2, (0, 1), (1.0, 1.0))
+    one = Config(S2, 0.25, jacobian=JacobianConfig((1.0, 1.0), 0.1))
+    lad = Config(
+        S2,
+        0.25,
+        jacobian={"grid_spacing": [1, 1], "min_det": 0.1, "tight_error_bound": [0.03, 0.01]},
+    )
+    assert lad.to_dict()["jacobian"]["tight_error_bound"] == [0.03, 0.01]
+    assert Config.from_dict(lad.to_dict()).jacobian == lad.jacobian
+    assert list(lad.eps_table()) == [0.25, 0.0625, 0.03, 0.0, 0.01]
+    # a one-entry list is the plain number
+    assert (
+        Config(
+            S2, 0.25, jacobian={"grid_spacing": [1, 1], "tight_error_bound": [0.03]}
+        ).jacobian.tight_error_bound
+        == 0.03
+    )
+    b1 = encode(u, one)
+    assert b1[4] == 2  # no ladder: still version 2
+    buf, d, cls = check_bound(u, lad)
+    assert not violations(d0, det_jacobian(d, 2, (0, 1), (1.0, 1.0)), 0.1).any()
+    _, _, c1 = check_bound(u, one)
+    # the ladder settles some samples at its second tier where one tier needs verbatim
+    assert (cls == 4).any() and (c1 == 3).sum() >= (cls == 3).sum()
+
+
 @pytest.mark.parametrize(
     "kw",
     [
@@ -199,6 +234,11 @@ def test_jacobian_promotes_samples():
         dict(axis_roles=S2, predictor="quintic"),
         dict(axis_roles=S2, jacobian={"grid_spacing": [1, 1, 1]}),
         dict(axis_roles=("spatial", "spatial"), jacobian={"grid_spacing": [1, 1]}),
+        dict(axis_roles=S2, jacobian={"grid_spacing": [1, 1], "tight_error_bound": []}),
+        dict(
+            axis_roles=S2, jacobian={"grid_spacing": [1, 1], "tight_error_bound": [0.01, 0.02]}
+        ),
+        dict(axis_roles=S2, jacobian={"grid_spacing": [1, 1], "tight_error_bound": [0.1] * 5}),
     ],
 )
 def test_config_rejections(kw):

@@ -1,6 +1,6 @@
 //! Per-chunk choice of the level schedule, after QoZ / HPEZ (Liu et al.,
-//! SC 2022 and SIGMOD 2024): code a central sub-block of the chunk with each
-//! candidate schedule and keep the cheapest.
+//! SC 2022 and SIGMOD 2024): code a central sub-block of the chunk (33^d or
+//! 65^d, by effort) with each candidate schedule and keep the cheapest.
 //!
 //! Deterministic by construction, so the Python reference picks the same
 //! schedule: the cost is an integer, Σ over nonzero codes of
@@ -25,8 +25,9 @@ pub const CANDIDATES: [(f64, f64); 7] = [
     (2.0, 4.0),
 ];
 
-/// Extent of the tuning sub-block along each predicted axis (2^6 + 1, so its
-/// own lattice is complete). Chunks up to this size are tuned on themselves.
+/// Extent of the tuning sub-block along each predicted axis for `Effort::Max`
+/// (2^6 + 1, so its own lattice is complete); `Effort::Fast` uses 33 = 2^5 + 1.
+/// Chunks up to the extent are tuned on themselves.
 pub const SAMPLE: usize = 65;
 
 /// Central sub-block of a canonical array (all batch entries).
@@ -39,6 +40,11 @@ fn sub_block(x: &[f64], cshape: &[usize], extent: usize) -> (Vec<f64>, Vec<usize
             sub[ax] = extent;
         }
     }
+    block_at(x, cshape, &start, &sub)
+}
+
+fn block_at(x: &[f64], cshape: &[usize], start: &[usize], sub: &[usize]) -> (Vec<f64>, Vec<usize>) {
+    let sub = sub.to_vec();
     let strides = c_strides(cshape);
     let n: usize = sub.iter().product();
     let mut out = Vec::with_capacity(n);
@@ -72,14 +78,19 @@ pub fn cost(codes: &[i64], n_verbatim: usize) -> u64 {
 /// The cheapest candidate schedule for the canonical chunk `x` of layout `lay`,
 /// each candidate run through the full encoder loop (Jacobian included) on
 /// the central sub-block.
-pub(crate) fn tune<T: Element>(cfg: &Config, lay: &Layout, x: &[f64]) -> Result<Schedule> {
-    let (xs, sub) = sub_block(x, &lay.canonical_shape(), SAMPLE);
+pub(crate) fn tune<T: Element>(
+    cfg: &Config,
+    lay: &Layout,
+    x: &[f64],
+    extent: usize,
+) -> Result<Schedule> {
+    let (xs, sub) = sub_block(x, &lay.canonical_shape(), extent);
     let mut sl = lay.clone();
     sl.pred_shape = sub[1..].to_vec();
     let mut best = (u64::MAX, Schedule::UNIFORM);
     for (alpha, beta) in CANDIDATES {
         let sched = Schedule { alpha, beta };
-        let (cls, codes, _) = crate::code_canonical::<T>(cfg, &sl, &xs, sched)?;
+        let (cls, codes, _) = crate::code_canonical::<T>(cfg, &sl, &xs, sched, None)?;
         let nv = cls.iter().filter(|&&c| c == VERBATIM).count();
         let c = cost(&codes, nv);
         if c < best.0 {

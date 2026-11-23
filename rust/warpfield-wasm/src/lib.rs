@@ -119,7 +119,8 @@ pub unsafe extern "C" fn wf_decode(
 }
 
 /// Encode a chunk; the bytes are left in the result buffer. `alpha`, `beta`:
-/// the level schedule, or (0, 0) to tune it per chunk.
+/// the level schedule, or (0, 0) to tune it per chunk. `effort`: 0 fast, 1 max.
+/// `zstd_level` <= 0 takes the effort's level.
 ///
 /// # Safety
 /// As for `wf_decode`; `data_ptr` holds prod(shape) values of `dtype`.
@@ -134,16 +135,26 @@ pub unsafe extern "C" fn wf_encode(
     zstd_level: i32,
     alpha: f64,
     beta: f64,
+    effort: u32,
 ) -> i32 {
     let run = || -> Result<Vec<u8>, Error> {
         let cfg = unsafe { parse(cfg_ptr, cfg_len) }?;
         let shape = unsafe { shape_of(shape_ptr, rank) };
         let n: usize = shape.iter().product();
+        let base = EncodeOptions::with_effort(if effort == 1 {
+            warpfield::Effort::Max
+        } else {
+            warpfield::Effort::Fast
+        });
         let opts = EncodeOptions {
-            zstd_level,
-            classes: false,
+            zstd_level: if zstd_level > 0 {
+                zstd_level
+            } else {
+                base.zstd_level
+            },
             // (0, 0) asks the encoder to tune the level schedule per chunk
             schedule: (alpha != 0.0 || beta != 0.0).then_some(warpfield::Schedule { alpha, beta }),
+            ..base
         };
         let enc = match dtype {
             0 => {

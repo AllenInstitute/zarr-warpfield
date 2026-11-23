@@ -107,3 +107,101 @@ def test_rust_errors():
         core.decode(b"XXXX" + buf[4:], (8, 8, 2), np.float32, cfg, backend="rust")
     with pytest.raises(core.WarpFieldSpecError):
         core.encode(np.zeros((8, 8), np.float32), cfg, backend="rust")
+
+
+def test_min_classes_identical():
+    from warpfield.core import TIGHT, VERBATIM
+
+    p, blk = _first_chunk("3d")
+    cfg = Config(p.axis_roles, 0.25, jacobian=JacobianConfig((float(p.spacing),) * p.ks, 0.1))
+    m = np.zeros(blk.shape, np.uint8)
+    m[0, :, :, :] = TIGHT
+    m[-1, 3:9, :, :] = VERBATIM
+    pb = core.encode(blk, cfg, backend="python", min_classes=m)
+    rb = core.encode(blk, cfg, backend="rust", min_classes=m)
+    a, b = fmt.read_chunk(pb, blk.dtype), fmt.read_chunk(rb, blk.dtype)
+    for x, y in zip(a[1:], b[1:], strict=True):
+        np.testing.assert_array_equal(
+            _bits(x) if x.dtype.kind == "f" else x, _bits(y) if y.dtype.kind == "f" else y
+        )
+    # the forced verbatim samples are stored exactly
+    d = core.decode(rb, blk.shape, blk.dtype, cfg)
+    np.testing.assert_array_equal(d[m == VERBATIM], blk[m == VERBATIM])
+
+
+def test_tight_ladder_identical():
+    from warpfield.core import VERBATIM, tight_class
+
+    p, blk = _first_chunk("3d")
+    lad = (0.25 / 8, 0.25 / 32, 0.25 / 128)
+    cfg = Config(
+        p.axis_roles, 0.25, jacobian=JacobianConfig((float(p.spacing),) * p.ks, 0.1, lad)
+    )
+    m = np.zeros(blk.shape, np.uint8)
+    m[0, :, :, :] = tight_class(1)
+    m[1, 2:5, :, :] = tight_class(2)
+    m[-1, 3:9, :, :] = VERBATIM
+    check_same(blk, cfg)
+    pb = core.encode(blk, cfg, backend="python", min_classes=m)
+    rb = core.encode(blk, cfg, backend="rust", min_classes=m)
+    assert pb[4] == 3  # format version 3: tiers past the first are in use
+    a, b = fmt.read_chunk(pb, blk.dtype, tiers=True), fmt.read_chunk(rb, blk.dtype, tiers=True)
+    for x, y in zip(a[1:], b[1:], strict=True):
+        np.testing.assert_array_equal(
+            _bits(x) if x.dtype.kind == "f" else x, _bits(y) if y.dtype.kind == "f" else y
+        )
+    for backend in ("python", "rust"):
+        d = core.decode(rb, blk.shape, blk.dtype, cfg, backend=backend)
+        err = np.abs(d.astype(np.float64) - blk)
+        assert (err[m == tight_class(1)] <= lad[1]).all()
+        assert (err[m == tight_class(2)] <= lad[2]).all()
+    # a configuration without those tiers cannot decode the chunk
+    short = Config(p.axis_roles, 0.25, jacobian=JacobianConfig((float(p.spacing),) * p.ks, 0.1))
+    for backend in ("python", "rust"):
+        with pytest.raises(fmt.WarpFieldFormatError):
+            core.decode(rb, blk.shape, blk.dtype, short, backend=backend)
+        with pytest.raises(core.WarpFieldSpecError):
+            core.encode(blk, short, backend=backend, min_classes=m)
+
+
+@pytest.mark.parametrize("ladder", [False, True])
+@pytest.mark.parametrize("name", ["2d", "2d_stack", "3d", "3d_time_stack", "4d"])
+def test_many_jacobian_rounds_identical(name, ladder):
+    # whole presets as one chunk at a loose bound: 3-7 rounds of the Jacobian
+    # loop, which Rust re-codes incrementally and Python by full re-runs
+    p = synth.preset(name, "small")
+    u = np.asarray(p.full()[0], np.float32)
+    eb = 1.0
+    lad = (eb / 8, eb / 32, eb / 128) if ladder else None
+    cfg = Config(
+        p.axis_roles, eb, jacobian=JacobianConfig((float(p.spacing),) * p.ks, 0.1, lad)
+    )
+    pb, pst, pcls = core.encode(u, cfg, stats=True, backend="python", schedule=(1.1, 1.5))
+    rb, rst, rcls = core.encode(u, cfg, stats=True, backend="rust", schedule=(1.1, 1.5))
+    assert pst.jacobian_rounds >= 3
+    assert pst.jacobian_rounds == rst.jacobian_rounds
+    assert pb == rb
+    np.testing.assert_array_equal(pcls, rcls)
+
+
+@pytest.mark.parametrize("effort", ["fast", "max"])
+@pytest.mark.parametrize("name", ["2d", "3d", "4d"])
+def test_effort_identical(name, effort):
+    # Python and Rust tune on the same sub-block and pick the same coder
+    p = synth.preset(name, "small")
+    u = np.asarray(p.full()[0], np.float32)
+    cfg = Config(p.axis_roles, 0.25, jacobian=JacobianConfig((float(p.spacing),) * p.ks, 0.1))
+    pb = core.encode(u, cfg, backend="python", effort=effort)
+    rb = core.encode(u, cfg, backend="rust", effort=effort)
+    assert pb == rb
+    for buf in (pb, rb):
+        d = core.decode(buf, u.shape, u.dtype, cfg)
+        assert np.abs(d.astype(np.float64) - u).max() <= 0.25
+
+
+def test_effort_rejected():
+    p, blk = _first_chunk("3d")
+    cfg = Config(p.axis_roles, 0.25)
+    for backend in ("python", "rust"):
+        with pytest.raises(core.WarpFieldSpecError):
+            core.encode(blk, cfg, backend=backend, effort="slow")

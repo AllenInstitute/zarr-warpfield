@@ -18,7 +18,7 @@ export type DataType = "float32" | "float64";
 export interface JacobianConfig {
   grid_spacing: readonly number[];
   min_det?: number;
-  tight_error_bound?: number | null;
+  tight_error_bound?: number | number[] | null;
 }
 
 export interface WarpFieldConfig {
@@ -64,8 +64,12 @@ interface Exports {
     zstdLevel: number,
     alpha: number,
     beta: number,
+    effort: number,
   ): number;
 }
+
+/** Encoder effort: "fast" (default) tunes on the chunk's central 33^d; "max" on 65^d. */
+export type Effort = "fast" | "max";
 
 export class WarpFieldError extends Error {}
 
@@ -172,7 +176,7 @@ export class WarpField {
    * Encode one chunk (C order). `zstdLevel` is ignored by the pure-Rust zstd in wasm.
    * `schedule` fixes the level schedule [alpha, beta] (both >= 1; the level with
    * interpolation step 2^L is coded at error_bound / min(alpha^L, beta)); by default
-   * it is tuned per chunk.
+   * it is tuned per chunk, on a sample whose size `effort` sets.
    */
   encode(
     data: Float32Array | Float64Array,
@@ -180,7 +184,11 @@ export class WarpField {
     config: ConfigLike,
     zstdLevel = 3,
     schedule?: readonly [number, number],
+    effort: Effort = "fast",
   ): Uint8Array {
+    if (effort !== "fast" && effort !== "max") {
+      throw new WarpFieldError(`effort must be "fast" or "max", not ${effort}`);
+    }
     const n = shape.reduce((a, b) => a * b, 1);
     if (data.length !== n) {
       throw new WarpFieldError(`data has ${data.length} values, shape needs ${n}`);
@@ -204,6 +212,7 @@ export class WarpField {
         zstdLevel,
         schedule ? schedule[0] : 0,
         schedule ? schedule[1] : 0,
+        effort === "max" ? 1 : 0,
       );
       if (status !== 0) this.fail();
       const p = this.exports.wf_result_ptr();

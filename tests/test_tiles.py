@@ -163,3 +163,65 @@ def test_bytes_match_zarr_chunks(tmp_path):
         z[...],
         decode_tiles(on_disk, SHAPE, TILES, np.float32, CFG, key=zarr_chunk_key),
     )
+
+
+LADDER = (0.25 / 8, 0.25 / 32, 0.25 / 128)
+
+
+@pytest.mark.parametrize("strategy", ["tight", "verbatim", "ladder"])
+@pytest.mark.parametrize("name", ["2d", "3d"])
+def test_jacobian_halo_has_no_violations_across_tiles(name, strategy):
+    from warpfield import JacobianConfig, jacobian, synth
+
+    p = synth.preset(name, "small")
+    u = np.asarray(p.full()[0], np.float32)
+    roles = p.axis_roles
+    h = (float(p.spacing),) * p.ks
+    cfg = Config(
+        roles, 0.25, jacobian=JacobianConfig(h, 0.1, LADDER if strategy == "ladder" else None)
+    )
+    strategy = "tight" if strategy == "ladder" else strategy
+    ca = roles.index("component")
+    sp = tuple(i for i, r in enumerate(roles) if r == "spatial")
+    d0 = jacobian.det_jacobian(u, ca, sp, h)
+
+    def count(halo):
+        tiles = encode_tiles(u, p.chunks, cfg, jacobian_halo=halo)
+        d = decode_tiles(tiles, u.shape, p.chunks, np.float32, cfg)
+        assert np.abs(d.astype(np.float64) - u).max() <= 0.25
+        return int(jacobian.violations(d0, jacobian.det_jacobian(d, ca, sp, h), 0.1).sum())
+
+    assert count(None) > 0  # the presets do have violations across tiles...
+    assert count(strategy) == 0  # ...and the halo check removes them
+
+
+@pytest.mark.parametrize("dims", [2, 3])
+def test_jacobian_halo_on_chunk_face_adversary(dims):
+    from warpfield import JacobianConfig, jacobian
+    from warpfield.adversary import chunk_face_adversary
+
+    shape, chunks, h = (48,) * dims, (16,) * dims, 4.0
+    u, labels, _ = chunk_face_adversary(shape, chunks, spacing=h, error_bound=0.25)
+    cfg = Config(
+        ("spatial",) * dims + ("component",), 0.25, jacobian=JacobianConfig((h,) * dims, 0.1)
+    )
+    sp = tuple(range(dims))
+    d0 = jacobian.det_jacobian(u, dims, sp, (h,) * dims)
+    tile = (*chunks, dims)
+
+    def bad(halo):
+        d = decode_tiles(
+            encode_tiles(u, tile, cfg, jacobian_halo=halo), u.shape, tile, np.float32, cfg
+        )
+        return jacobian.violations(d0, jacobian.det_jacobian(d, dims, sp, (h,) * dims), 0.1)
+
+    b = bad(None)
+    assert b.sum() > 0 and (labels[b] > 0).all()  # it breaks cells, and only on faces
+    assert bad("tight").sum() == 0
+    assert bad("verbatim").sum() == 0
+    cfg = Config(
+        ("spatial",) * dims + ("component",),
+        0.25,
+        jacobian=JacobianConfig((h,) * dims, 0.1, LADDER),
+    )
+    assert bad("tight").sum() == 0

@@ -59,7 +59,7 @@ fn float64_and_jacobian() {
     cfg.jacobian = Some(JacobianConfig {
         grid_spacing: vec![2.0, 2.0, 2.0],
         min_det: 0.1,
-        tight_error_bound: None,
+        tight_error_bounds: Vec::new(),
     });
     let enc = encode(&x, &shape, &cfg, &EncodeOptions::default()).unwrap();
     let y: Vec<f64> = decode(&enc.bytes, &shape, &cfg).unwrap();
@@ -75,13 +75,21 @@ fn json_config() {
     )
     .unwrap();
     assert_eq!(c.axis_roles[0], Role::Smooth);
-    assert_eq!(c.eps_table(), [0.1, 0.025, 0.1 / 8.0, 0.0]);
+    assert_eq!(c.eps_table()[..4], [0.1, 0.025, 0.1 / 8.0, 0.0]);
+    let ladder = Config::from_json(
+        r#"{"axis_roles": ["spatial", "spatial", "component"], "error_bound": 0.1,
+        "jacobian": {"grid_spacing": [4, 4], "tight_error_bound": [0.02, 0.005]}}"#,
+    )
+    .unwrap();
+    assert_eq!(ladder.eps_table(), [0.1, 0.025, 0.02, 0.0, 0.005, 0.0, 0.0]);
     for bad in [
         r#"{"error_bound": 0.1}"#,
         r#"{"axis_roles": ["spatial"], "error_bound": -1}"#,
         r#"{"axis_roles": ["spatial"], "surprise": 1}"#,
         r#"{"axis_roles": ["spatial", "component"], "jacobian": {"grid_spacing": [1, 1]}}"#,
         r#"{"axis_roles": ["component", "component", "spatial"]}"#,
+        r#"{"axis_roles": ["spatial", "component"], "jacobian": {"grid_spacing": [1], "tight_error_bound": [0.01, 0.02]}}"#,
+        r#"{"axis_roles": ["spatial", "component"], "jacobian": {"grid_spacing": [1], "tight_error_bound": []}}"#,
     ] {
         assert!(
             matches!(Config::from_json(bad), Err(Error::Spec(_))),

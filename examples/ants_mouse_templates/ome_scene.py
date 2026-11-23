@@ -35,6 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
+
 def space_axes(unit: str = "millimeter") -> list[dict]:
     return [{"name": a, "type": "space", "unit": unit} for a in ("z", "y", "x")]
 

@@ -138,7 +138,7 @@ class WarpfieldTest {
     // encoding from an offset
     float[] shifted = new float[u.length + 3];
     System.arraycopy(u, 0, shifted, 3, u.length);
-    assertArrayEquals(enc, Warpfield.encode(shifted, 3, SHAPE, CONFIG, 19));
+    assertArrayEquals(enc, Warpfield.encode(shifted, 3, SHAPE, CONFIG, Warpfield.DEFAULT_ZSTD_LEVEL));
   }
 
   @Test

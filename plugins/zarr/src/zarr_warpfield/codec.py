@@ -24,11 +24,16 @@ CODEC_NAME = "warpfield"
 
 @dataclass(frozen=True)
 class WarpFieldCodec(ArrayBytesCodec):
-    """Error-bounded, seam-free lossy codec for displacement fields."""
+    """Error-bounded, seam-free lossy codec for displacement fields.
+
+    `effort` ("fast", the default, or "max") is an encoder setting only: it is
+    not stored in the array metadata, and chunks of either decode the same.
+    """
 
     is_fixed_size = False
 
     config: Config
+    effort: str
 
     def __init__(
         self,
@@ -39,7 +44,10 @@ class WarpFieldCodec(ArrayBytesCodec):
         predictor: str = "eno",
         boundary: str = "clamped",
         jacobian: Any = None,
+        effort: str = "fast",
     ) -> None:
+        if effort not in ("fast", "max"):
+            raise WarpFieldSpecError(f"effort must be 'fast' or 'max', not {effort!r}")
         cfg = Config(
             axis_roles=tuple(axis_roles),
             error_bound=float(error_bound),
@@ -49,6 +57,7 @@ class WarpFieldCodec(ArrayBytesCodec):
             jacobian=jacobian,
         )
         object.__setattr__(self, "config", cfg)
+        object.__setattr__(self, "effort", effort)
 
     @classmethod
     def from_config(cls, cfg: Config) -> WarpFieldCodec:
@@ -101,7 +110,7 @@ class WarpFieldCodec(ArrayBytesCodec):
     ) -> Buffer | None:
         arr = np.asarray(chunk_array.as_ndarray_like())
         # the Rust backend releases the GIL, so chunks code in parallel threads
-        buf = await asyncio.to_thread(encode, arr, self.config)
+        buf = await asyncio.to_thread(encode, arr, self.config, effort=self.effort)
         return chunk_spec.prototype.buffer.from_bytes(buf)
 
     async def _decode_single(self, chunk_bytes: Buffer, chunk_spec: ArraySpec) -> NDBuffer:

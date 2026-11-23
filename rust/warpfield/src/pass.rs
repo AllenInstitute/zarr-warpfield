@@ -5,13 +5,13 @@
 //! within a block in C order over (batch, list_0, list_1, ...). Quantization
 //! codes are emitted / consumed in that order.
 
-use crate::config::{Config, VERBATIM};
+use crate::config::{Config, N_CLASSES, VERBATIM};
 use crate::element::Element;
 use crate::error::{Result, format};
 use crate::layout::c_strides;
 use crate::predict::{Tap, known, new_points, predict, stencil, top_stride};
 
-const Q_LIMIT: f64 = 4503599627370496.0; // 2**52
+pub(crate) const Q_LIMIT: f64 = 4503599627370496.0; // 2**52
 
 /// Visit every sample of the block batch × lists[0] × lists[1] × ... in C order.
 /// `offs[i][k]` is `lists[i][k] * stride(i)`. `f(linear index, per-axis list index)`.
@@ -56,7 +56,10 @@ fn for_block(nb: usize, sb: usize, offs: &[Vec<usize>], mut f: impl FnMut(usize,
 pub(crate) trait Quantizer {
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]);
     /// Per-class bounds for the samples that follow (the level schedule).
-    fn set_eps(&mut self, eps: [f64; 4]);
+    fn set_eps(&mut self, eps: [f64; N_CLASSES]);
+    /// Called after each block (0: the anchors, then one per level and axis
+    /// with targets, in pass order).
+    fn end_block(&mut self, _step: usize, _recon: &mut [f64]) {}
 }
 
 /// Level schedule (QoZ / HPEZ): the level with interpolation step h = 2^L is
@@ -85,41 +88,58 @@ impl Schedule {
         f.min(self.beta)
     }
 
-    pub fn eps(&self, base: &[f64; 4], h: usize) -> [f64; 4] {
+    pub fn eps(&self, base: &[f64; N_CLASSES], h: usize) -> [f64; N_CLASSES] {
         let f = self.factor(h);
         base.map(|e| e / f)
     }
 }
 
+/// Encodes every sample: its code goes to `qs[lin]` and `lin` to `order`, so
+/// the code stream is `qs` over `order`, skipping verbatim samples. With a
+/// Jacobian `check`, each block then tightens the corners of the cells it
+/// completes and breaks (`incr::fix_block`).
 pub(crate) struct Encoder<'a, T: Element> {
     pub x: &'a [f64],
     pub cls: &'a mut [u8],
-    pub eps: [f64; 4],
-    pub codes: Vec<i64>,
+    pub eps: [f64; N_CLASSES],
+    pub qs: &'a mut [i64],
+    pub pred: &'a mut [f64],
+    pub order: Vec<u32>,
+    pub check: Option<&'a crate::incr::Check<'a>>,
+    pub promoted: &'a mut [Vec<usize>],
+    pub stuck: &'a mut [Vec<usize>],
     pub _t: std::marker::PhantomData<T>,
 }
 
 impl<T: Element> Quantizer for Encoder<'_, T> {
-    fn set_eps(&mut self, eps: [f64; 4]) {
+    fn set_eps(&mut self, eps: [f64; N_CLASSES]) {
         self.eps = eps;
     }
     #[inline(always)]
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]) {
-        let x = self.x[lin];
-        let c = self.cls[lin];
-        if c < VERBATIM {
-            let e = self.eps[c as usize];
-            let w = 2.0 * e;
-            let q = ((x - pred) / w).round_ties_even();
-            let r = T::round(pred + q * w);
-            if x.is_finite() && (x - r).abs() <= e && q.abs() < Q_LIMIT {
-                self.codes.push(q as i64);
-                recon[lin] = r;
-                return;
-            }
-            self.cls[lin] = VERBATIM;
+        let (c, q, r) = crate::incr::quantize::<T>(self.x[lin], pred, self.cls[lin], &self.eps);
+        self.cls[lin] = c;
+        self.qs[lin] = q;
+        self.pred[lin] = pred;
+        recon[lin] = r;
+        self.order.push(lin as u32);
+    }
+    fn end_block(&mut self, step: usize, recon: &mut [f64]) {
+        if let Some(ch) = self.check {
+            crate::incr::fix_block::<T>(
+                ch,
+                step,
+                &self.eps,
+                self.x,
+                recon,
+                self.cls,
+                self.qs,
+                self.pred,
+                &mut self.promoted[step],
+                &mut self.stuck[step],
+                None,
+            );
         }
-        recon[lin] = x;
     }
 }
 
@@ -127,19 +147,19 @@ pub(crate) struct Decoder<'a, T: Element> {
     pub codes: &'a [i64],
     pub cursor: usize,
     pub cls: &'a [u8],
-    pub eps: [f64; 4],
+    pub eps: [f64; N_CLASSES],
     pub short: bool,
     pub _t: std::marker::PhantomData<T>,
 }
 
 impl<T: Element> Quantizer for Decoder<'_, T> {
-    fn set_eps(&mut self, eps: [f64; 4]) {
+    fn set_eps(&mut self, eps: [f64; N_CLASSES]) {
         self.eps = eps;
     }
     #[inline(always)]
     fn sample(&mut self, lin: usize, pred: f64, recon: &mut [f64]) {
         let c = self.cls[lin];
-        if c < VERBATIM {
+        if c != VERBATIM {
             let Some(&q) = self.codes.get(self.cursor) else {
                 self.short = true;
                 return;
@@ -179,6 +199,8 @@ pub(crate) fn run<Q: Quantizer>(
     let lists: Vec<Vec<usize>> = pshape.iter().map(|&n| known(s_top, n, boundary)).collect();
     q.set_eps(sched.eps(&base_eps, s_top));
     for_block(nb, sb, &offsets(&lists), |lin, _| q.sample(lin, 0.0, recon));
+    q.end_block(0, recon);
+    let mut step = 0usize;
 
     let mut h = s_top / 2;
     while h >= 1 {
@@ -218,6 +240,8 @@ pub(crate) fn run<Q: Quantizer>(
                 }
                 q.sample(lin, p, recon);
             });
+            step += 1;
+            q.end_block(step, recon);
         }
         h /= 2;
     }

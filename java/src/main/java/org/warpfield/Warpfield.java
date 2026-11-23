@@ -27,8 +27,26 @@ import java.nio.FloatBuffer;
  * <p>All methods throw {@link WarpfieldException} for invalid arguments or corrupt data.
  */
 public final class Warpfield {
-  /** zstd level used by the reference encoder; the level never changes decoded values. */
-  public static final int DEFAULT_ZSTD_LEVEL = 19;
+  /** zstd level of {@link Effort#FAST}, the default; the level never changes decoded values. */
+  public static final int DEFAULT_ZSTD_LEVEL = 12;
+
+  /** zstd level of {@link Effort#MAX}. */
+  public static final int MAX_ZSTD_LEVEL = 19;
+
+  /**
+   * How hard the encoder looks for a small encoding. Decoding, and every error and Jacobian
+   * guarantee, are the same either way.
+   */
+  public enum Effort {
+    /**
+     * The default: tune the level schedule on the chunk's central 33^d, choose the code coder at
+     * zstd level 3 and compress at level 12. About 2-7x faster than {@link #MAX}, for stores
+     * 1-17% larger.
+     */
+    FAST,
+    /** Tune on the central 65^d (the whole chunk up to 64^d); compress at zstd level 19. */
+    MAX
+  }
 
   static {
     NativeLoader.load();
@@ -142,38 +160,42 @@ public final class Warpfield {
 
   // ---- encode -------------------------------------------------------------------------
 
-  /** Encode a float32 chunk at the default zstd level. */
+  /** Encode a float32 chunk with {@link Effort#FAST}. */
   public static byte[] encode(float[] data, int[] shape, String config) {
-    return encode(data, 0, shape, config, DEFAULT_ZSTD_LEVEL);
+    return encode(data, 0, shape, config, Effort.FAST, 0, 0, 0);
   }
 
-  /** Encode a float64 chunk at the default zstd level. */
+  /** Encode a float64 chunk with {@link Effort#FAST}. */
   public static byte[] encode(double[] data, int[] shape, String config) {
-    return encode(data, 0, shape, config, DEFAULT_ZSTD_LEVEL);
+    return encode(data, 0, shape, config, Effort.FAST, 0, 0, 0);
+  }
+
+  /** Encode a float32 chunk with the given effort. */
+  public static byte[] encode(float[] data, int[] shape, String config, Effort effort) {
+    return encode(data, 0, shape, config, effort, 0, 0, 0);
+  }
+
+  /** Encode a float64 chunk with the given effort. */
+  public static byte[] encode(double[] data, int[] shape, String config, Effort effort) {
+    return encode(data, 0, shape, config, effort, 0, 0, 0);
   }
 
   /**
-   * Encode the chunk at {@code data[offset ...]}. Lower zstd levels encode faster and give
-   * slightly larger output; decoded values do not change. The level schedule is tuned per
-   * chunk.
+   * Encode the chunk at {@code data[offset ...]} with {@link Effort#FAST} at the given zstd
+   * level. Lower levels encode faster and give larger output; decoded values do not change.
    */
   public static byte[] encode(
       float[] data, int offset, int[] shape, String config, int zstdLevel) {
-    return encode(data, offset, shape, config, zstdLevel, 0, 0);
+    return encode(data, offset, shape, config, Effort.FAST, zstdLevel, 0, 0);
   }
 
   /** As {@link #encode(float[], int, int[], String, int)}, for float64. */
   public static byte[] encode(
       double[] data, int offset, int[] shape, String config, int zstdLevel) {
-    return encode(data, offset, shape, config, zstdLevel, 0, 0);
+    return encode(data, offset, shape, config, Effort.FAST, zstdLevel, 0, 0);
   }
 
-  /**
-   * Encode with a fixed level schedule: the level with interpolation step 2^L is coded at
-   * {@code error_bound / min(alpha^L, beta)}. Both must be at least 1; {@code (1, 1)} is
-   * uniform, and {@code (0, 0)} tunes the schedule per chunk (the default). With a fixed
-   * schedule, decoded values re-encode to themselves.
-   */
+  /** As {@link #encode(float[], int, int[], String, Effort, int, double, double)}, with FAST. */
   public static byte[] encode(
       float[] data,
       int offset,
@@ -182,8 +204,7 @@ public final class Warpfield {
       int zstdLevel,
       double alpha,
       double beta) {
-    check(data, shape, config, data);
-    return nEncodeFloat32(config, data, offset, shape, zstdLevel, alpha, beta);
+    return encode(data, offset, shape, config, Effort.FAST, zstdLevel, alpha, beta);
   }
 
   /** As {@link #encode(float[], int, int[], String, int, double, double)}, for float64. */
@@ -195,8 +216,43 @@ public final class Warpfield {
       int zstdLevel,
       double alpha,
       double beta) {
-    check(data, shape, config, data);
-    return nEncodeFloat64(config, data, offset, shape, zstdLevel, alpha, beta);
+    return encode(data, offset, shape, config, Effort.FAST, zstdLevel, alpha, beta);
+  }
+
+  /**
+   * The general form. {@code zstdLevel} 0 takes the effort's level. {@code (alpha, beta)} fixes
+   * the level schedule: the level with interpolation step 2^L is coded at {@code error_bound /
+   * min(alpha^L, beta)}; both must be at least 1, {@code (1, 1)} is uniform, and {@code (0, 0)}
+   * tunes it per chunk (the default). With a fixed schedule, decoded values re-encode to
+   * themselves.
+   */
+  public static byte[] encode(
+      float[] data,
+      int offset,
+      int[] shape,
+      String config,
+      Effort effort,
+      int zstdLevel,
+      double alpha,
+      double beta) {
+    check(data, shape, config, effort);
+    return nEncodeFloat32(
+        config, data, offset, shape, zstdLevel, alpha, beta, effort.ordinal());
+  }
+
+  /** As {@link #encode(float[], int, int[], String, Effort, int, double, double)}, for float64. */
+  public static byte[] encode(
+      double[] data,
+      int offset,
+      int[] shape,
+      String config,
+      Effort effort,
+      int zstdLevel,
+      double alpha,
+      double beta) {
+    check(data, shape, config, effort);
+    return nEncodeFloat64(
+        config, data, offset, shape, zstdLevel, alpha, beta, effort.ordinal());
   }
 
   private static void check(Object src, int[] shape, String config, Object dst) {
@@ -244,7 +300,8 @@ public final class Warpfield {
       int[] shape,
       int zstdLevel,
       double alpha,
-      double beta);
+      double beta,
+      int effort);
 
   private static native byte[] nEncodeFloat64(
       String config,
@@ -253,5 +310,6 @@ public final class Warpfield {
       int[] shape,
       int zstdLevel,
       double alpha,
-      double beta);
+      double beta,
+      int effort);
 }

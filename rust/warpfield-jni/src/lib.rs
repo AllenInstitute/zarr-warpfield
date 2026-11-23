@@ -133,18 +133,29 @@ fn encode_array<'local, T: Element + TypeArray>(
     zstd_level: jint,
     alpha: f64,
     beta: f64,
+    effort: jint,
 ) -> Res<JByteArray<'local>> {
     let cfg = config(env, cfg)?;
     let (shape, n) = shape(env, shp)?;
     let total = env.get_array_length(data).map_err(jerr)? as usize;
     let r = range(off, n, total, "data")?;
+    let base = EncodeOptions::with_effort(if effort == 1 {
+        warpfield::Effort::Max
+    } else {
+        warpfield::Effort::Fast
+    });
     let opts = EncodeOptions {
-        zstd_level,
-        classes: false,
+        // 0 (or less) takes the effort's level
+        zstd_level: if zstd_level > 0 {
+            zstd_level
+        } else {
+            base.zstd_level
+        },
         // (0, 0) asks the encoder to tune the level schedule per chunk
         schedule: (alpha != 0.0 || beta != 0.0).then_some(warpfield::Schedule { alpha, beta }),
+        ..base
     };
-    // Encoding takes far longer than decoding (zstd level 19), so copy the
+    // Encoding takes far longer than decoding, so copy the
     // input out rather than hold a critical region (which can stall the GC).
     let x: Vec<T> = {
         let el = unsafe { env.get_array_elements(data, ReleaseMode::NoCopyBack) }.map_err(jerr)?;
@@ -270,9 +281,13 @@ pub extern "system" fn Java_org_warpfield_Warpfield_nEncodeFloat32<'l>(
     zstd_level: jint,
     alpha: jdouble,
     beta: jdouble,
+    effort: jint,
 ) -> jbyteArray {
     guard(&mut env, std::ptr::null_mut(), |env| {
-        Ok(encode_array::<f32>(env, &cfg, &data, off, &shape, zstd_level, alpha, beta)?.into_raw())
+        Ok(encode_array::<f32>(
+            env, &cfg, &data, off, &shape, zstd_level, alpha, beta, effort,
+        )?
+        .into_raw())
     })
 }
 
@@ -287,8 +302,12 @@ pub extern "system" fn Java_org_warpfield_Warpfield_nEncodeFloat64<'l>(
     zstd_level: jint,
     alpha: jdouble,
     beta: jdouble,
+    effort: jint,
 ) -> jbyteArray {
     guard(&mut env, std::ptr::null_mut(), |env| {
-        Ok(encode_array::<f64>(env, &cfg, &data, off, &shape, zstd_level, alpha, beta)?.into_raw())
+        Ok(encode_array::<f64>(
+            env, &cfg, &data, off, &shape, zstd_level, alpha, beta, effort,
+        )?
+        .into_raw())
     })
 }

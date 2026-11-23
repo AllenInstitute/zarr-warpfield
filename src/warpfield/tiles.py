@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from warpfield import halo
 from warpfield.core import Config, WarpFieldSpecError, decode, encode
 
 TileIndex = tuple[int, ...]
@@ -100,11 +101,20 @@ def encode_tiles(
     workers: int = 1,
     backend: str | None = None,
     schedule: tuple[float, float] | None = None,
+    jacobian_halo: str | None = None,
+    effort: str = "fast",
 ) -> MutableMapping[Hashable, bytes]:
     """Encode `source` tile by tile into `out` (a new dict by default).
 
+    `jacobian_halo` ("tight" or "verbatim") extends the Jacobian guarantee to
+    cells that straddle tiles: each tile is read with one sample of halo and
+    the corners of straddling cells that a worst-case face error could break
+    are coded tighter or stored exactly (see `warpfield.halo`). Decoding is
+    unchanged.
+
     `schedule` fixes the level schedule (alpha, beta) for every tile; None
-    tunes it per tile (see `warpfield.encode`).
+    tunes it per tile. `effort` is "fast" (default) or "max" (see
+    `warpfield.encode`).
 
     `key` maps a tile index to the key stored in `out` (the index itself by
     default; `zarr_chunk_key` for zarr's layout). With `skip_fill`, tiles that
@@ -120,11 +130,29 @@ def encode_tiles(
     out = {} if out is None else out
 
     def code(index: TileIndex) -> tuple[TileIndex, bytes | None]:
-        block = np.asarray(source[tile_slices(index, shape, tile_shape)], dtype=dtype)
-        tile = _padded(block, tile_shape, fill_value)
+        sl = tile_slices(index, shape, tile_shape)
+        min_classes = None
+        if jacobian_halo is not None:
+            ext = halo.read_extended(source, sl, tile_shape, cfg, fill_value)
+            inner = tuple(
+                slice(None) if r == "component" else slice(1, t + 1)
+                for r, t in zip(cfg.axis_roles, tile_shape, strict=True)
+            )
+            tile = np.ascontiguousarray(ext[inner].astype(dtype))
+            min_classes = halo.straddle_classes(ext, cfg, jacobian_halo)
+        else:
+            block = np.asarray(source[sl], dtype=dtype)
+            tile = _padded(block, tile_shape, fill_value)
         if skip_fill and np.array_equal(tile, np.full_like(tile, fill_value), equal_nan=True):
             return index, None
-        return index, encode(tile, cfg, backend=backend, schedule=schedule)
+        return index, encode(
+            tile,
+            cfg,
+            backend=backend,
+            schedule=schedule,
+            min_classes=min_classes,
+            effort=effort,
+        )
 
     def store(result: tuple[TileIndex, bytes | None]) -> None:
         index, buf = result

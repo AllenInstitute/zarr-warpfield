@@ -60,25 +60,40 @@ fn encode_typed<'py, T: Element + numpy::Element>(
     ))
 }
 
-/// encode(arr, config_json, *, classes=False, zstd_level=19, schedule=None)
+/// encode(arr, config_json, *, classes=False, effort="fast", zstd_level=None, schedule=None,
+///        min_classes=None)
 ///     -> (bytes, classes | None, n_codes, n_tight, n_verbatim, jacobian_rounds)
 ///
 /// `arr` is a C-contiguous float32 or float64 numpy array holding one chunk.
 #[pyfunction]
-#[pyo3(signature = (arr, config, *, classes = false, zstd_level = warpfield::DEFAULT_ZSTD_LEVEL, schedule = None))]
+#[pyo3(signature = (arr, config, *, classes = false, effort = "fast", zstd_level = None, schedule = None, min_classes = None))]
 fn encode<'py>(
     py: Python<'py>,
     arr: &Bound<'py, PyAny>,
     config: &str,
     classes: bool,
-    zstd_level: i32,
+    effort: &str,
+    zstd_level: Option<i32>,
     schedule: Option<(f64, f64)>,
+    min_classes: Option<PyReadonlyArrayDyn<'py, u8>>,
 ) -> PyResult<EncodeResult<'py>> {
     let cfg = self::config(config)?;
+    let min_classes = match min_classes {
+        Some(m) => Some(
+            m.as_slice()
+                .map_err(|_| PyValueError::new_err("min_classes must be C-contiguous"))?
+                .to_vec(),
+        ),
+        None => None,
+    };
+    let effort = warpfield::Effort::parse(effort).map_err(err)?;
+    let base = EncodeOptions::with_effort(effort);
     let opts = EncodeOptions {
-        zstd_level,
+        zstd_level: zstd_level.unwrap_or(base.zstd_level),
         classes,
         schedule: schedule.map(|(alpha, beta)| warpfield::Schedule { alpha, beta }),
+        min_classes,
+        ..base
     };
     if let Ok(a) = arr.extract::<PyReadonlyArrayDyn<'py, f32>>() {
         encode_typed(py, a, &cfg, &opts)
@@ -171,6 +186,5 @@ fn warpfield_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SpecError", m.py().get_type::<SpecError>())?;
     m.add("FormatError", m.py().get_type::<FormatError>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add("DEFAULT_ZSTD_LEVEL", warpfield::DEFAULT_ZSTD_LEVEL)?;
     Ok(())
 }

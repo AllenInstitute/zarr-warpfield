@@ -50,7 +50,12 @@ own:
    to their area.
 3. **Per-sample error classes** (interior / face / tight / verbatim), stored as
    sparse index lists. The Jacobian loop and float-rounding safety net both
-   use them.
+   use them. `tight_error_bound` may be a ladder of up to four decreasing
+   bounds; a sample the Jacobian loop flags moves to the next tier down, and
+   only past the last one to verbatim. The pass checks each Jacobian cell as
+   soon as a block codes its last corner, and tightens that block's corners
+   on the spot, before anything is predicted from them; only cells whose
+   earlier corners are to blame go to another round of the loop.
 
 It also takes two pieces from SZ3, QoZ and HPEZ [3, 5, 6]:
 
@@ -74,7 +79,9 @@ It also takes two pieces from SZ3, QoZ and HPEZ [3, 5, 6]:
 ### Format versions
 
 Version 2 (current) adds the code coder byte and the level schedule (α, β) to
-the chunk header. Version 1 chunks (varints, uniform schedule) decode unchanged
+the chunk header. Version 3 is version 2 plus one section holding the tier of
+each tight sample; encoders write it only for chunks that use a tight tier past
+the first, so configurations without a ladder still write version 2. Version 1 chunks (varints, uniform schedule) decode unchanged
 in every implementation, so existing stores stay readable. Decoders older than
 version 2 cannot read version 2 chunks.
 
@@ -154,6 +161,32 @@ tiles = encode_tiles(field, (128, 128, 128, 3), cfg, workers=8)       # {(i, j, 
 part = decode_tiles(tiles, field.shape, (128, 128, 128, 3), np.float32, cfg,
                     region=(slice(0, 300), slice(None), slice(None), slice(None)))
 ```
+
+**Effort.** Encoders take `effort="fast"` (the default) or `effort="max"`
+(`Warpfield.Effort` in Java, the `effort` argument of `encode` in JavaScript).
+Decoding, the format and every guarantee are the same; only encode time and
+size differ:
+
+- **fast:** tunes the level schedule on the chunk's central 33^d, tries both
+  code coders at zstd level 3, and compresses the winner at level 12.
+- **max:** tunes on the central 65^d (the whole chunk, up to 64^d) and
+  compresses both coders at level 19.
+
+64³ chunks, Jacobian check on, one thread:
+
+| field | ε | max | fast | fast vs max |
+|---|---|---|---|---|
+| ANTs crop | 2.5 µm | 27 MB/s, 401× | 138 MB/s, 389× | 5.2× faster, +2.9% size |
+| ANTs crop | 6.25 µm | 31 MB/s, 823× | 140 MB/s, 771× | 4.6× faster, +6.8% |
+| MICrONS | 0.1 µm | 16 MB/s, 124× | 88 MB/s, 110× | 5.6× faster, +13% |
+| MICrONS | 1 µm | 10 MB/s, 154× | 54 MB/s, 126× | 5.5× faster, +22% |
+| synth3d | 0.25 | 12 MB/s, 96× | 86 MB/s, 84× | 7.4× faster, +14% |
+
+The zarr codec takes `effort` as a constructor argument; it is an encoder
+setting, so it is not written to the array metadata. Size and speed tables
+elsewhere in this README were measured with what is now `effort="max"`, and
+before the in-pass Jacobian check, which makes folded fields (MICrONS,
+synth3d) 2–24% smaller than shown there.
 
 Edge tiles are padded with `fill_value` as zarr pads edge chunks, so a tile's
 bytes are those of the zarr chunk with the same index; with
@@ -436,9 +469,22 @@ chunk (`make_synthetic.py --shape ...`).
 
 ## Status and limits
 
-- Tuned encoding tries seven level schedules per chunk, plus the Jacobian loop
-  for each: 32–39 MB/s per thread on the full ANTs fields, 4–18 MB/s on folded
-  ones. A preset `schedule` skips the tuning and encodes the ANTs fields at
+- Encoding tries seven level schedules per chunk, plus the Jacobian loop for
+  each. With `effort="max"`: 32–39 MB/s per thread on the full ANTs fields,
+  10–18 MB/s on the folded MICrONS field in 64³ chunks; the default
+  `effort="fast"` is 5–7.5× faster (see [Use](#use)). SZ3 encodes at about
+  390 MB/s, so the gap on ANTs is now about 2.7×. On folded fields `fast`
+  costs 13–25% in size: there the schedule chosen on a 33³ sample often
+  differs from the best one for the chunk, and zstd 12 misses repeats that
+  zstd 19 finds at step jumps. After the first pass, each round of the
+  Jacobian loop re-codes only the tightened samples and what is predicted from
+  them, and re-checks only the cells they touch (falling back to a full pass
+  when that exceeds 1/16 of the chunk). The output is byte-identical to full
+  re-runs; on MICrONS the loop runs 1.8–2.4× faster. Checking each cell
+  during the pass, as its block completes it, cut the rounds per chunk on
+  MICrONS by about a third and made folded stores 2–24% smaller (MICrONS at
+  ε = 1 µm: 127× → 154× with `max`), at about the same speed. On folded fields the
+  zstd stage (level 19, both coders) is now the largest single cost. A preset `schedule` skips the tuning and encodes the ANTs fields at
   89–158 MB/s, with stores within 1% of the tuned size.
 - The tuning sub-block is the chunk's centre. On chunks much larger than 65³
   with very uneven content (the whole MICrONS field) it can miss the best
@@ -446,8 +492,17 @@ chunk (`make_synthetic.py --shape ...`).
 - The schedule candidates and the predictor are fixed. HPEZ also tunes the
   interpolator per level; on ANTs the cubic predictor alone would add about
   5%, but it costs 20% on folded fields, so ENO stays.
-- Cells straddling two chunks are not Jacobian-checked. Their perturbation is
-  bounded by the face bound, and the benchmark counts them (a handful at most).
+- By default, cells straddling two chunks are not Jacobian-checked: their
+  perturbation is bounded by the face bound, and the benchmark counts them
+  (tens to hundreds on folded fields). `encode_tiles(..., jacobian_halo="tight")`
+  reads one extra sample around each tile and forces the corners of any
+  crossing cell that worst-case face errors could break to the loosest safe
+  tight tier. That removes every crossing violation, and decoding is
+  unchanged. With a ladder (`tight_error_bound` = ε/8, ε/16, ε/32, ε/64) the
+  folded MICrONS stores end up 1–19% *smaller* than without the halo, because
+  the ladder also settles in-chunk violations more cheaply. On the smooth ANTs
+  field at ε = 6.25 µm, which has no real violations, the worst-case bound
+  still costs 20–37%; a sharper bound is the open lever there.
 - Partial edge chunks are padded with `fill_value` by zarr. The padding costs a
   few bytes and does not affect the bound.
 - The Neuroglancer decoder (`src/datasource/zarr/codec/warpfield`, the Rust

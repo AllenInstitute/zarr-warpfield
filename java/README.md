@@ -52,9 +52,11 @@ Apple M-series, 14 cores:
 | Java (`org.warpfield.Bench`) | 800–820 MB/s | 5.1–5.8 GB/s |
 | Python, `warpfield_rs` | 796 MB/s | 4.7 GB/s |
 
-Encoding copies its input once (it can take long enough at zstd level 19 that
-holding a critical region would stall the garbage collector). Pass a lower zstd
-level to `encode` for faster encoding; decoded values do not change. The
+Encoding copies its input once (it can take long enough that holding a
+critical region would stall the garbage collector). `encode` uses
+`Warpfield.Effort.FAST` by default; `encode(data, shape, config,
+Warpfield.Effort.MAX)` tunes on a larger sample and compresses at zstd level
+19, 5–7.5× slower for 3–25% smaller chunks. Decoded values do not change. The
 level schedule is tuned per chunk; `encode(data, offset, shape, config,
 zstdLevel, alpha, beta)` fixes it instead (both ≥ 1; `(1, 1)` is uniform), which
 also makes decode → encode → decode a fixed point.

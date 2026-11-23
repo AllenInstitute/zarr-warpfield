@@ -3,25 +3,30 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic  b"WFLD"
-//! 4       1     format version (2; version 1 is still read)
+//! 4       1     format version (2, or 3 with a tight ladder; 1 is still read)
 //! 5       1     rank R of the canonical array (batch axis + predicted axes)
 //! 6       1     code coder: 0 zigzag LEB128 varints, 1 canonical Huffman (v2)
 //! 7       1     reserved, zero
 //! 8       8*R   canonical shape, little-endian uint64
 //! ...     2*8   level schedule alpha, beta, little-endian float64 (v2 only)
-//! ...     4*4   byte lengths of the four sections, little-endian uint32
+//! ...     4*4   byte lengths of the four sections (five in v3), little-endian uint32
 //! ...     3*8   counts: quantization codes, tight indices, verbatim indices (uint64)
 //! ...           section 0: quantization codes (coder above), zstd frame
 //!               section 1: tight-class sample indices, delta + LEB128, zstd frame
 //!               section 2: verbatim sample indices, delta + LEB128, zstd frame
 //!               section 3: verbatim values, raw little-endian data type, zstd frame
+//!               section 4 (v3): tier of every tight index, one byte each in
+//!                          index order (0 = first tight bound), zstd frame
 //! ```
+//!
+//! Version 3 is written only when some tight sample uses a tier past the first.
 
 use crate::error::{Result, format};
 use crate::pass::Schedule;
 
 pub const MAGIC: &[u8; 4] = b"WFLD";
 pub const VERSION: u8 = 2;
+pub const VERSION_LADDER: u8 = 3;
 pub const CODER_VARINT: u8 = 0;
 pub const CODER_HUFFMAN: u8 = 1;
 
@@ -100,6 +105,8 @@ pub(crate) struct Chunk {
     pub schedule: Schedule,
     pub codes: Vec<i64>,
     pub tight: Vec<usize>,
+    /// Tier of each tight sample (all zero before version 3).
+    pub tiers: Vec<u8>,
     pub verbatim: Vec<usize>,
     pub values: Vec<u8>, // raw little-endian verbatim values
 }
@@ -112,15 +119,28 @@ pub(crate) fn varint_codes(codes: &[i64]) -> Vec<u8> {
     raw
 }
 
-/// Section 0 both ways (varints and Huffman, each then zstd); the smaller wins.
-fn code_section(codes: &[i64], level: i32) -> Result<(u8, Vec<u8>)> {
-    let v = crate::frames::compress(&varint_codes(codes), level)?;
-    let h = crate::frames::compress(&crate::huffman::encode(codes), level)?;
-    Ok(if h.len() < v.len() {
-        (CODER_HUFFMAN, h)
+/// Section 0 both ways (varints and Huffman, each then zstd); the smaller
+/// wins. With `pick`, both are compressed at that (cheaper) level to choose,
+/// and only the winner again at `level`.
+fn code_section(codes: &[i64], level: i32, pick: Option<i32>) -> Result<(u8, Vec<u8>)> {
+    let raw_v = varint_codes(codes);
+    let raw_h = crate::huffman::encode(codes);
+    let p = pick.filter(|&p| p < level).unwrap_or(level);
+    let v = crate::frames::compress(&raw_v, p)?;
+    let h = crate::frames::compress(&raw_h, p)?;
+    let (coder, raw, best) = if h.len() < v.len() {
+        (CODER_HUFFMAN, &raw_h, h)
     } else {
-        (CODER_VARINT, v)
-    })
+        (CODER_VARINT, &raw_v, v)
+    };
+    Ok((
+        coder,
+        if p < level {
+            crate::frames::compress(raw, level)?
+        } else {
+            best
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -129,21 +149,29 @@ pub(crate) fn write(
     schedule: Schedule,
     codes: &[i64],
     tight: &[usize],
+    tiers: &[u8],
     verbatim: &[usize],
     values: &[u8],
     level: i32,
+    pick: Option<i32>,
 ) -> Result<Vec<u8>> {
-    let (coder, sec0) = code_section(codes, level)?;
-    let sections = [
+    let (coder, sec0) = code_section(codes, level, pick)?;
+    let mut sections = vec![
         sec0,
         crate::frames::compress(&pack_indices(tight), level)?,
         crate::frames::compress(&pack_indices(verbatim), level)?,
         crate::frames::compress(values, level)?,
     ];
+    let version = if tiers.iter().any(|&t| t != 0) {
+        sections.push(crate::frames::compress(tiers, level)?);
+        VERSION_LADDER
+    } else {
+        VERSION
+    };
     let total: usize = sections.iter().map(Vec::len).sum();
-    let mut out = Vec::with_capacity(8 + 8 * shape.len() + 16 + 16 + 24 + total);
+    let mut out = Vec::with_capacity(8 + 8 * shape.len() + 16 + 20 + 24 + total);
     out.extend_from_slice(MAGIC);
-    out.push(VERSION);
+    out.push(version);
     out.push(shape.len() as u8);
     out.extend_from_slice(&[coder, 0]);
     for &s in shape {
@@ -192,7 +220,7 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
     }
     let head = r.take(4)?;
     let version = head[0];
-    if version != 1 && version != 2 {
+    if !(1..=3).contains(&version) {
         return format(format!("unsupported warpfield format version {version}"));
     }
     let rank = head[1] as usize;
@@ -215,7 +243,7 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
         }
         Schedule { alpha, beta }
     };
-    let mut lens = [0usize; 4];
+    let mut lens = vec![0usize; if version == VERSION_LADDER { 5 } else { 4 }];
     for l in &mut lens {
         *l = r.u32()? as usize;
     }
@@ -226,7 +254,7 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
     if n_codes > n || n_tight > n || n_verb > n {
         return format("section counts exceed the chunk size");
     }
-    let mut raw = Vec::with_capacity(4);
+    let mut raw = Vec::with_capacity(lens.len());
     for &l in &lens {
         raw.push(crate::frames::decompress(r.take(l)?)?);
     }
@@ -246,11 +274,21 @@ pub(crate) fn read(buf: &[u8], value_size: usize) -> Result<Chunk> {
     if values.len() != n_verb * value_size {
         return format("verbatim value count mismatch");
     }
+    let tiers = if lens.len() == 5 {
+        let t = std::mem::take(&mut raw[4]);
+        if t.len() != n_tight {
+            return format("tight tier count mismatch");
+        }
+        t
+    } else {
+        vec![0u8; n_tight]
+    };
     Ok(Chunk {
         shape,
         schedule,
         codes,
         tight,
+        tiers,
         verbatim,
         values,
     })

@@ -25,7 +25,7 @@ let shape = [64, 64, 64, 3];                       // one chunk, C order
 let mut cfg = Config::new(
     vec![Role::Spatial, Role::Spatial, Role::Spatial, Role::Component], 0.25);
 cfg.jacobian = Some(JacobianConfig { grid_spacing: vec![16.0; 3], min_det: 0.1,
-                                     tight_error_bound: None });
+                                     tight_error_bounds: vec![] });
 // or: let cfg = Config::from_json(r#"{"axis_roles": [...], "error_bound": 0.25}"#)?;
 let enc = encode(&field, &shape, &cfg, &EncodeOptions::default())?;   // f32 or f64
 let out: Vec<f32> = decode(&enc.bytes, &shape, &cfg)?;
@@ -38,8 +38,11 @@ Features:
   It decodes any frame.
 - `json` (default): `Config::from_json`.
 
-`EncodeOptions::zstd_level` defaults to 19 like the reference. Level 3 encodes
-faster for somewhat larger chunks. `EncodeOptions::schedule` fixes the level
+`EncodeOptions::default()` is `Effort::Fast` (tune on the central 33^d, choose
+the code coder at zstd level 3, compress at level 12);
+`EncodeOptions::with_effort(Effort::Max)` tunes on 65^d and compresses at
+level 19, 5–7.5× slower for 3–25% smaller chunks. Both match the Python
+reference's `effort` byte for byte. `EncodeOptions::schedule` fixes the level
 schedule (`Schedule { alpha, beta }`, both ≥ 1); `None` (the default) tunes it
 per chunk. The decoder reads it from the chunk header.
 
@@ -64,7 +67,7 @@ The low-level module:
 
 ```python
 import json, warpfield_rs as rs
-buf, classes, n_codes, n_tight, n_verbatim, rounds = rs.encode(arr, json.dumps(cfg), classes=True, zstd_level=19, schedule=None)
+buf, classes, n_codes, n_tight, n_verbatim, rounds = rs.encode(arr, json.dumps(cfg), classes=True, effort="fast", zstd_level=None, schedule=None)
 out = rs.decode(buf, arr.shape, "float32", json.dumps(cfg))
 rs.decode_into(buf, out_array, json.dumps(cfg))    # into an existing C-contiguous array
 ```

@@ -183,6 +183,8 @@ def write(
     space="mm RAS",
     jacobian_image=False,
     min_level_extent=16,
+    n_levels=None,
+    level_error_bounds=None,
 ):
     """An ANTs displacement field (NIfTI) as a field store."""
     from streaming import NiftiField  # needs nibabel; only this path does
@@ -203,6 +205,8 @@ def write(
         space=space,
         jacobian_image=jacobian_image,
         min_level_extent=min_level_extent,
+        n_levels=n_levels,
+        level_error_bounds=level_error_bounds,
         source=nifti.name,
     )
 
@@ -221,6 +225,8 @@ def write_field_store(
     output_axes=("z", "y", "x"),
     jacobian_image=False,
     min_level_extent=16,
+    n_levels=None,
+    level_error_bounds=None,
     source=None,
     extra_attributes=None,
 ):
@@ -231,12 +237,23 @@ def write_field_store(
     idx_to_out: 3x4, array index (sample n at n) -> output coordinates, whose
     axes are `output_axes` in `unit`; vec_to_out: 3x3, components -> output
     (equal to idx_to_out's linear part divided by the spacing).
+
+    Coarser levels are added until a level would be under `min_level_extent`
+    samples across, or exactly `n_levels` of them if given.
+    `level_error_bounds` gives each level's error bound (s0 first); by default
+    every level uses `error_bound`.
     """
     Nk, Nj, Ni = (int(n) for n in shape)
     idx_to_out = np.asarray(idx_to_out, float)
     vec_to_out = np.asarray(vec_to_out, float)
     spacing = [float(s) for s in np.linalg.norm(idx_to_out[:, :3], axis=0)]
 
+    def level_bound(level: int) -> float:
+        if level_error_bounds is None:
+            return error_bound
+        return float(level_error_bounds[level])
+
+    error_bound = level_bound(0)
     root = zarr.open_group(out, mode="w", zarr_format=3)
     codec = WarpFieldCodec(
         axis_roles=["component", "spatial", "spatial", "spatial"],
@@ -316,12 +333,19 @@ def write_field_store(
                     out_b[3:, bk, bj, bi] = blk.max(1)
         bounds[:, k0 // BLOCK : k0 // BLOCK + out_b.shape[1]] = out_b
 
-    # Coarser levels: 2x2x2 block means of the decoded level below, same absolute
-    # error bound, so coarse views of a warp need only a few small field chunks.
+    # Coarser levels: 2x2x2 block means of the decoded level below (by default at
+    # the same absolute error bound), so coarse views of a warp need only a few
+    # small field chunks.
     levels = [("s0", 1)]
-    scales_meta = [{"path": "s0", "index_to_output": idx_to_out.tolist()}]
+    scales_meta = [
+        {"path": "s0", "index_to_output": idx_to_out.tolist(), "error_bound": error_bound}
+    ]
     prev, shape = field, (Nk, Nj, Ni)
-    while min(shape) > 2 * min_level_extent:
+    while (
+        len(levels) <= n_levels
+        if n_levels is not None
+        else min(shape) > 2 * min_level_extent
+    ):
         f = 2 ** len(levels)
         shape = tuple(-(-n // 2) for n in shape)
         lvl_spacing = [x * f for x in spacing]
@@ -333,7 +357,7 @@ def write_field_store(
             fill_value=0.0,
             serializer=WarpFieldCodec(
                 axis_roles=["component", "spatial", "spatial", "spatial"],
-                error_bound=error_bound,
+                error_bound=level_bound(len(levels)),
                 jacobian={"grid_spacing": lvl_spacing, "min_det": min_det},
             ),
             compressors=None,
@@ -360,8 +384,14 @@ def write_field_store(
         lvl = idx_to_out.copy()
         lvl[:, :3] *= f
         lvl[:, 3] = idx_to_out[:, 3] + idx_to_out[:, :3] @ np.full(3, (f - 1) / 2)
+        scales_meta.append(
+            {
+                "path": f"s{len(levels)}",
+                "index_to_output": lvl.tolist(),
+                "error_bound": level_bound(len(levels)),
+            }
+        )
         levels.append((f"s{len(levels)}", f))
-        scales_meta.append({"path": levels[-1][0], "index_to_output": lvl.tolist()})
         prev = arr
 
     for meta, err in zip(scales_meta, level_errors(root), strict=True):
@@ -386,7 +416,11 @@ def write_field_store(
         "version": "0.2",
         "error_bound": error_bound,
         "levels": [
-            {"path": m["path"], "interpolation_error": m["interpolation_error"]}
+            {
+                "path": m["path"],
+                "error_bound": m["error_bound"],
+                "interpolation_error": m["interpolation_error"],
+            }
             for m in scales_meta
         ],
         "bounds": {"path": "bounds", "block_shape": [BLOCK] * 3},

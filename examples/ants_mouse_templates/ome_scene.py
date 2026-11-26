@@ -116,15 +116,34 @@ def upgrade_field(field: Path) -> None:
     zj.write_text(json.dumps(meta, indent=2))
 
 
-def displacements(field_path: str, affine: np.ndarray) -> dict:
+def displacements(
+    field_path: str,
+    affine: np.ndarray,
+    before: np.ndarray | None = None,
+    after: np.ndarray | None = None,
+) -> dict:
+    """The field's displacements in the space's coordinates (from the space into
+    the field's "intrinsic" system and back), with optional affines applied
+    before and after it, folded into the first and last step (3x4 each)."""
+    into = inverse_affine(affine)
+    back = affine
+    if before is not None:
+        into = compose_affine(into, before)
+    if after is not None:
+        back = compose_affine(after, back)
     return {
         "type": "sequence",
         "transformations": [
-            {"type": "affine", "affine": inverse_affine(affine).tolist()},
+            {"type": "affine", "affine": into.tolist()},
             {"type": "displacements", "path": field_path, "interpolation": "linear"},
-            {"type": "affine", "affine": affine.tolist()},
+            {"type": "affine", "affine": back.tolist()},
         ],
     }
+
+
+def compose_affine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """a after b, both 3x4."""
+    return np.concatenate([a[:, :3] @ b[:, :3], a[:, :3] @ b[:, 3:] + a[:, 3:]], axis=1)
 
 
 def write(
@@ -134,9 +153,15 @@ def write(
     input_space: str,
     output_space: str,
     unit: str = "millimeter",
+    affine: np.ndarray | None = None,
 ):
     """Both fields and the bijection between the two spaces, whose axes are in `unit`
-    (the unit of the fields' own coordinate systems)."""
+    (the unit of the fields' own coordinate systems).
+
+    `affine` (3x4, in the spaces' coordinates) is an ANTs registration's affine,
+    applied after the forward field: a point x of the input (fixed) space maps
+    to affine(x + u(x)), and a point y of the output (moving) space to
+    z + v(z), z = affine^-1(y), with u, v the forward and inverse fields."""
     if scene.exists():
         shutil.rmtree(scene)
     paths = {}
@@ -168,10 +193,12 @@ def write(
                             "forward": displacements(
                                 paths["forward"],
                                 field_affine(scene / paths["forward"]),
+                                after=affine,
                             ),
                             "inverse": displacements(
                                 paths["inverse"],
                                 field_affine(scene / paths["inverse"]),
+                                before=None if affine is None else inverse_affine(affine),
                             ),
                         }
                     ],

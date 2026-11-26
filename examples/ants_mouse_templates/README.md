@@ -71,9 +71,9 @@ spim_stpt_ants.zarr/              ome.scene: the two template spaces and a "bije
   space: affine to `intrinsic`, the forward field's `displacements`, then the
   affine back. Resampling SPIM through it puts SPIM in STPT space. The inverse
   transformation uses the inverse field.
-- **Neuroglancer** takes a field group as a layer source's `"warp"`. It finds
-  the field of the opposite direction (used to move mesh vertices) through the
-  scene's bijection.
+- **Neuroglancer** takes a field group, or the scene, as a data source's
+  `"transformSource"`. It finds the field of the opposite direction (used to
+  move mesh vertices) through the scene's bijection.
 
 ## Results
 

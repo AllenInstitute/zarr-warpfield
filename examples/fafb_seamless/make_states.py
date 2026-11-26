@@ -31,7 +31,7 @@ void main() {{ emitRGB(color * toNormalized(getDataValue())); }}
 
 
 def layer(name, url, warp=None, visible=True, shader=None, blend=None):
-    source = {"url": url} if warp is None else {"url": url, "warp": warp}
+    source = {"url": url} if warp is None else {"url": url, "transformSource": warp, "prependTransform": True}
     out = {"type": "image", "source": source, "name": name, "tab": "source"}
     if not visible:
         out["visible"] = False

@@ -140,7 +140,8 @@ def matrix(m: np.ndarray) -> list:
 def ccf_layer(name, M, warp_url, meshes=True):
     src = {"url": CCF_2017, "transform": {"matrix": matrix(M), "outputDimensions": {"z": UM, "y": UM, "x": UM}}}
     if warp_url:
-        src["warp"] = warp_url
+        src["transformSource"] = warp_url
+        src["prependTransform"] = True
     layer = {
         "type": "segmentation",
         "source": src,
@@ -161,7 +162,8 @@ def template_layer(zarr_url, name, colour, value_range, M_mm_to_brain, warp_url,
     m = M_um @ um_input(intrinsic_to_ras_mm(zarr_url))
     src = {"url": f"zarr3://{zarr_url}", "transform": {"matrix": matrix(m), "outputDimensions": {"z": UM, "y": UM, "x": UM}}}
     if warp_url:
-        src["warp"] = warp_url
+        src["transformSource"] = warp_url
+        src["prependTransform"] = True
     rgb = {"green": "0.0, normalized(), 0.0", "cyan": "0.0, normalized(), normalized()"}[colour]
     return {
         "type": "image",
@@ -189,7 +191,7 @@ def channel_layers(dataset_state, warp_url):
         layer = copy.deepcopy(layer)
         if warp_url:
             url = layer["source"] if isinstance(layer["source"], str) else layer["source"]["url"]
-            layer["source"] = {"url": url, "warp": warp_url}
+            layer["source"] = {"url": url, "transformSource": warp_url, "prependTransform": True}
         layer.pop("tab", None)
         out.append(layer)
     return out
@@ -305,7 +307,7 @@ def main():
     ):
         b = copy.deepcopy(magenta)
         if brain_warp:
-            b["source"] = {"url": b["source"] if isinstance(b["source"], str) else b["source"]["url"], "warp": brain_warp}
+            b["source"] = {"url": b["source"] if isinstance(b["source"], str) else b["source"]["url"], "transformSource": brain_warp, "prependTransform": True}
         t = copy.deepcopy(tmpl)
         t["opacity"] = 1.0
         if "spim" in name:  # green, like the STPT comparisons

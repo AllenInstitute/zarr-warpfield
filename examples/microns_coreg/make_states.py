@@ -110,7 +110,8 @@ def stack_layer(coreg_state, M, warp_url):
         },
     }
     if warp_url:
-        source["warp"] = warp_url
+        source["transformSource"] = warp_url
+        source["prependTransform"] = True
     layer["source"] = source
     layer["name"] = "in vivo stack"
     layer["opacity"] = 0.8
@@ -137,7 +138,8 @@ def scan_layers(coreg_state, M, warp_url):
                 },
             }
             if warp_url:
-                src["warp"] = warp_url
+                src["transformSource"] = warp_url
+                src["prependTransform"] = True
             new.append(src)
         layer["source"] = new
         layer["visible"] = False
